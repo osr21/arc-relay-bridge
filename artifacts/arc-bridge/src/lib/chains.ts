@@ -38,7 +38,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     hexId: "0xaa36a7",
     name: "Ethereum Sepolia",
     shortName: "Sepolia",
-    rpcUrl: "https://rpc.sepolia.org",
+    rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
     explorerUrl: "https://sepolia.etherscan.io",
     cctpDomain: 0,
     usdcAddress: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
