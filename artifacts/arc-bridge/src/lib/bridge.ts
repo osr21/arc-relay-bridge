@@ -8,7 +8,6 @@ import {
   ATTESTATION_API,
 } from "./chains";
 import { calculateFee, formatUsdc } from "./config";
-import { FEE_ROUTER_ABI, getFeeRouterAddress } from "@/contracts/FeeRouterABI";
 
 export type BridgeStep =
   | "idle"
@@ -426,75 +425,7 @@ async function pollAttestation(
   );
 }
 
-// ── Smart-contract path: single FeeRouter.bridge() call ───────────────────
-
-async function burnViaFeeRouter(
-  fromChain: ChainConfig,
-  toChain: ChainConfig,
-  grossAmountInUnits: bigint,
-  mintRecipient: string,
-  signer: ethers.Signer,
-  signerAddress: string,
-  feeRouterAddress: string,
-  onStatusChange: (status: BridgeStatus) => void
-): Promise<{ burnTxHash: string; feeTxHash?: string; messageBytes?: string }> {
-  const usdc          = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
-  const mintRecipient32 = addressToBytes32(mintRecipient);
-
-  // ── Step 1: Approve FeeRouter for the gross amount ─────────────────────
-  onStatusChange({ step: "approving", message: "Checking USDC allowance for FeeRouter..." });
-
-  const allowance: bigint = await usdc.allowance(signerAddress, feeRouterAddress);
-  if (allowance < grossAmountInUnits) {
-    const approveTx = await usdc.approve(feeRouterAddress, grossAmountInUnits);
-    onStatusChange({
-      step: "approving",
-      message: "Approval submitted, waiting for confirmation...",
-      txHash: approveTx.hash,
-    });
-    const approveReceipt = await approveTx.wait();
-    if (!approveReceipt) throw new Error("Approval transaction was not confirmed. Please try again.");
-  } else {
-    onStatusChange({ step: "approving", message: "Allowance sufficient, skipping approval." });
-  }
-
-  // ── Step 2: FeeRouter.bridge() — fee + burn in one tx ─────────────────
-  onStatusChange({
-    step: "collecting",
-    message: "Sending bridge transaction (fee collected + burn in one step)...",
-  });
-
-  const feeRouter = new ethers.Contract(feeRouterAddress, FEE_ROUTER_ABI, signer);
-  // FeeRouter v2: usdc and tokenMessenger are immutable — 4 params.
-  // On chains where eth_estimateGas is broken (e.g. Arc Testnet returns data=null),
-  // supply a hard-coded gasLimit to skip the estimateGas call entirely.
-  const feeRouterOverrides = fromChain.gasLimitOverride
-    ? { gasLimit: fromChain.gasLimitOverride }
-    : {};
-  const bridgeTx  = await feeRouter.bridge(
-    grossAmountInUnits,
-    toChain.cctpDomain,
-    mintRecipient32,
-    fromChain.minFinalityThreshold ?? 1000,
-    feeRouterOverrides
-  );
-
-  onStatusChange({
-    step: "burning",
-    message: "Bridge transaction submitted, waiting for confirmation...",
-    burnTxHash: bridgeTx.hash,
-  });
-
-  const bridgeReceipt = await bridgeTx.wait();
-  if (!bridgeReceipt) {
-    throw new Error("Bridge transaction was not confirmed. Please check the explorer and try again.");
-  }
-
-  const messageBytes = parseMessageSent(bridgeReceipt);
-  return { burnTxHash: bridgeReceipt.hash, messageBytes };
-}
-
-// ── Fallback path: manual approve → transfer fee → depositForBurn ──────────
+// ── Burn path: approve → transfer fee → depositForBurn ────────────────────
 
 async function burnWithManualFee(
   fromChain: ChainConfig,
@@ -642,30 +573,13 @@ export async function executeBridge(
     );
   }
 
-  // Choose burn path: FeeRouter contract (preferred) or manual fallback
-  const feeRouterAddress = getFeeRouterAddress(fromChain.id);
-  let burnTxHash: string;
-  let feeTxHash: string | undefined;
-  let messageBytes: string | undefined;
-
-  if (feeRouterAddress) {
-    // ── Smart contract path ──────────────────────────────────────────────
-    const result = await burnViaFeeRouter(
-      fromChain, toChain, grossAmountInUnits, recipientAddress,
-      signer, signerAddress, feeRouterAddress, onStatusChange
-    );
-    burnTxHash   = result.burnTxHash;
-    messageBytes = result.messageBytes;
-  } else {
-    // ── Manual fallback path ─────────────────────────────────────────────
-    const result = await burnWithManualFee(
-      fromChain, toChain, grossAmountInUnits, recipientAddress,
-      signer, signerAddress, onStatusChange
-    );
-    burnTxHash   = result.burnTxHash;
-    feeTxHash    = result.feeTxHash;
-    messageBytes = result.messageBytes;
-  }
+  const result = await burnWithManualFee(
+    fromChain, toChain, grossAmountInUnits, recipientAddress,
+    signer, signerAddress, onStatusChange
+  );
+  const burnTxHash   = result.burnTxHash;
+  const feeTxHash    = result.feeTxHash;
+  const messageBytes = result.messageBytes;
 
   // ── Attest ────────────────────────────────────────────────────────────
   onStatusChange({
