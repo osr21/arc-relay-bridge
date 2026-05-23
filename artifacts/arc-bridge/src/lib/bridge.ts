@@ -465,12 +465,12 @@ async function burnViaFeeRouter(
   });
 
   const feeRouter = new ethers.Contract(feeRouterAddress, FEE_ROUTER_ABI, signer);
+  // FeeRouter v2: usdc and tokenMessenger are immutable on the contract —
+  // only 4 params needed (removed caller-supplied address vectors).
   const bridgeTx  = await feeRouter.bridge(
     grossAmountInUnits,
     toChain.cctpDomain,
     mintRecipient32,
-    fromChain.usdcAddress,
-    fromChain.tokenMessenger,
     fromChain.minFinalityThreshold ?? 1000
   );
 
