@@ -17,7 +17,7 @@ export interface ChainConfig {
 export const CHAINS: Record<string, ChainConfig> = {
   ARC_TESTNET: {
     id: 5042002,
-    hexId: "0x4CEC52",
+    hexId: "0x4CEF52",
     name: "Arc Testnet",
     shortName: "Arc",
     rpcUrl: "https://rpc.drpc.testnet.arc.network",

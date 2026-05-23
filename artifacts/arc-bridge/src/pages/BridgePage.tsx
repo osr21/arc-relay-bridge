@@ -90,7 +90,7 @@ export default function BridgePage() {
     setToBalance(fromBalance);
   }
 
-  const wrongNetwork = walletAddress && walletChainId !== fromChain.id;
+  const wrongNetwork = walletAddress && walletChainId !== null && walletChainId !== fromChain.id;
 
   async function handleSwitchNetwork() {
     try {
