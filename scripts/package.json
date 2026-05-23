@@ -5,10 +5,16 @@
   "type": "module",
   "scripts": {
     "hello": "tsx ./src/hello.ts",
+    "compile": "tsx ./src/compile.ts",
+    "deploy": "tsx ./src/deployFeeRouter.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "tsx": "catalog:"
+  },
+  "dependencies": {
+    "ethers": "^6.16.0",
+    "solc": "0.8.20"
   }
 }

@@ -1,0 +1,172 @@
+/**
+ * Deploy FeeRouter to all configured chains.
+ *
+ * Usage:
+ *   pnpm --filter @workspace/scripts run deploy
+ *
+ * Reads from environment:
+ *   DEPLOYER_PRIVATE_KEY  — deployer wallet private key (needs gas on each chain)
+ *   FEE_RECIPIENT         — wallet address that receives protocol fees
+ *
+ * Writes deployed addresses to:
+ *   artifacts/arc-bridge/src/contracts/deployments.json
+ */
+
+import { ethers } from "ethers";
+import { writeFileSync, mkdirSync } from "fs";
+import { resolve, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const ABI = [
+  "constructor(address _feeRecipient, uint256 _feeBps)",
+  "function bridge(uint256 grossAmount, uint32 destinationDomain, bytes32 mintRecipient, address usdc, address tokenMessenger) returns (uint64 nonce)",
+  "function setFeeBps(uint256 _feeBps)",
+  "function setFeeRecipient(address _feeRecipient)",
+  "function transferOwnership(address newOwner)",
+  "function rescueTokens(address token, uint256 amount)",
+  "function owner() view returns (address)",
+  "function feeRecipient() view returns (address)",
+  "function feeBps() view returns (uint256)",
+  "event BridgeInitiated(address indexed sender, uint256 grossAmount, uint256 feeAmount, uint256 bridgeAmount, uint32 destinationDomain, bytes32 mintRecipient, address usdc, address tokenMessenger)",
+];
+
+// Compiled from contracts/FeeRouter.sol via solc 0.8.20 --optimize --runs 200
+const BYTECODE =
+  "0x608060405234801561000f575f80fd5b50604051610bd4380380610bd483398101604081905261002e91610111565b6001600160a01b0382166100895760405162461bcd60e51b815260206004820152601d60248201527f466565526f757465723a207a65726f2066656520726563697069656e7400000060448201526064015b60405180910390fd5b6101f48111156100db5760405162461bcd60e51b815260206004820152601760248201527f466565526f757465723a2066656520746f6f20686967680000000000000000006044820152606401610080565b5f8054336001600160a01b031991821617909155600180549091166001600160a01b039390931692909217909155600255610148565b5f8060408385031215610122575f80fd5b82516001600160a01b0381168114610138575f80fd5b6020939093015192949293505050565b610a7f806101555f395ff3fe608060405234801561000f575f80fd5b5060043610610090575f3560e01c80638da5cb5b116100635780638da5cb5b14610103578063d55be8c614610115578063e4d43dba1461011e578063e74b981b1461014a578063f2fde38b1461015d575f80fd5b806324a9d8531461009457806346904840146100b057806357376198146100db57806372c27b62146100f0575b5f80fd5b61009d60025481565b6040519081526020015b60405180910390f35b6001546100c3906001600160a01b031681565b6040516001600160a01b0390911681526020016100a7565b6100ee6100e93660046108b6565b610170565b005b6100ee6100fe3660046108de565b61021a565b5f546100c3906001600160a01b031681565b61009d6101f481565b61013161012c3660046108f5565b6102d6565b60405167ffffffffffffffff90911681526020016100a7565b6100ee610158366004610952565b6106d9565b6100ee61016b366004610952565b6107bb565b5f546001600160a01b031633146101a25760405162461bcd60e51b815260040161019990610972565b60405180910390fd5b5f5460405163a9059cbb60e01b81526001600160a01b039182166004820152602481018390529083169063a9059cbb906044016020604051808303815f875af11580156101f1573d5f803e3d5ffd5b505050506040513d601f19601f8201168201806040525081019061021591906109a0565b505050565b5f546001600160a01b031633146102435760405162461bcd60e51b815260040161019990610972565b6101f48111156102955760405162461bcd60e51b815260206004820152601760248201527f466565526f757465723a2066656520746f6f20686967680000000000000000006044820152606401610199565b60025460408051918252602082018390527f528d9479e9f9889a87a3c30c7f7ba537e5e59c4c85a37733b16e57c62df61302910160405180910390a1600255565b5f80861161031f5760405162461bcd60e51b8152602060048201526016602482015275119959549bdd5d195c8e881e995c9bc8185b5bdd5b9d60521b6044820152606401610199565b6040516323b872dd60e01b8152336004820152306024820152604481018790526001600160a01b038416906323b872dd906064016020604051808303815f875af115801561036f573d5f803e3d5ffd5b505050506040513d601f19601f8201168201806040525081019061039391906109a0565b6103df5760405162461bcd60e51b815260206004820152601e60248201527f466565726f757465723a207472616e7366657246726f6d206661696c656400006044820152606401610199565b5f612710600254886103f191906109d3565b6103fb91906109f0565b90505f6104088289610a0f565b90505f81116104595760405162461bcd60e51b815260206004820152601d60248201527f466565526f757465723a2062726964676520616d6f756e74207a65726f0000006044820152606401610199565b821561051f5760015460405163a9059cbb60e01b81526001600160a01b039182166004820152602481018490529086169063a9059cbb906044016020604051808303815f875af11580156104af573d5f803e3d5ffd5b505050506040513d601f19601f820116820180604052508101906104d391906109a0565b61051f5760405162461bcd60e51b815260206004820152601e60248201527f466565526f757465723a20666565207472616e73666572206661696c656400006044820152606401610199565b60405163095ea7b360e01b81526001600160a01b0385811660048301526024820183905286169063095ea7b3906044016020604051808303815f875af115801561056b573d5f803e3d5ffd5b505050506040513d601f19601f8201168201806040525081019061058f91906109a0565b6105db5760405162461bcd60e51b815260206004820152601960248201527f466565526f757465723a20617070726f7665206661696c6564000000000000006044820152606401610199565b6040516337e9a82760e11b81526004810182905263ffffffff88166024820152604481018790526001600160a01b038681166064830152851690636fd3504e906084016020604051808303815f875af115801561063a573d5f803e3d5ffd5b505050506040513d601f19601f8201168201806040525081019061065e9190610a22565b604080518a81526020810185905290810183905263ffffffff89166060820152608081018890526001600160a01b0387811660a0830152861660c082015290935033907f02d0747687b2b50f297597ed3ccd3c86072990fb2eb103d641d0dc7ef3a037ec9060e00160405180910390a2505095945050505050565b5f546001600160a01b031633146107025760405162461bcd60e51b815260040161019990610972565b6001600160a01b0381166107525760405162461bcd60e51b8152602060048201526017602482015276466565526f757465723a207a65726f206164647265737360481b6044820152606401610199565b600154604080516001600160a01b03928316815291831660208301527faaebcf1bfa00580e41d966056b48521fa9f202645c86d4ddf28113e617c1b1d3910160405180910390a1600180546001600160a01b0319166001600160a01b0392909216919091179055565b5f546001600160a01b031633146107e45760405162461bcd60e51b815260040161019990610972565b6001600160a01b0381166108345760405162461bcd60e51b8152602060048201526017602482015276466565526f757465723a207a65726f206164647265737360481b6044820152606401610199565b5f54604080516001600160a01b03928316815291831660208301527f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0910160405180910390a15f80546001600160a01b0319166001600160a01b0392909216919091179055565b80356001600160a01b03811681146108b1575f80fd5b919050565b5f80604083850312156108c7575f80fd5b6108d08361089b565b946020939093013593505050565b5f602082840312156108ee575f80fd5b5035919050565b5f805f805f60a08688031215610909575f80fd5b85359450602086013563ffffffff81168114610923575f80fd5b9350604086013592506109386060870161089b565b91506109466080870161089b565b90509295509295909350565b5f60208284031215610962575f80fd5b61096b8261089b565b9392505050565b6020808252601490820152732332b2a937baba32b91d103737ba1037bbb732b960611b604082015260600190565b5f602082840312156109b0575f80fd5b8151801515811461096b575f80fd5b634e487b7160e01b5f52601160045260245ffd5b80820281158282048414176109ea576109ea6109bf565b92915050565b5f82610a0a57634e487b7160e01b5f52601260045260245ffd5b500490565b818103818111156109ea576109ea6109bf565b5f60208284031215610a32575f80fd5b815167ffffffffffffffff8116811461096b575f80fdfea26469706673582212200530fee3b9f742ccbdbd9161fa4d92ba6b17aafca4711f939550f2a43444cbe264736f6c63430008140033";
+
+interface ChainTarget {
+  name: string;
+  rpcUrl: string;
+  chainId: number;
+  explorerUrl: string;
+}
+
+const CHAINS: ChainTarget[] = [
+  {
+    name: "Arc Testnet",
+    rpcUrl: "https://rpc.drpc.testnet.arc.network",
+    chainId: 5042002,
+    explorerUrl: "https://explorer.testnet.arc.network",
+  },
+  {
+    name: "Ethereum Sepolia",
+    rpcUrl: "https://rpc.sepolia.org",
+    chainId: 11155111,
+    explorerUrl: "https://sepolia.etherscan.io",
+  },
+  {
+    name: "Base Sepolia",
+    rpcUrl: "https://sepolia.base.org",
+    chainId: 84532,
+    explorerUrl: "https://sepolia.basescan.org",
+  },
+  {
+    name: "Avalanche Fuji",
+    rpcUrl: "https://api.avax-test.network/ext/bc/C/rpc",
+    chainId: 43113,
+    explorerUrl: "https://testnet.snowtrace.io",
+  },
+];
+
+const FEE_BPS = 30; // 0.30% — keep in sync with src/lib/config.ts
+
+async function deployToChain(
+  chain: ChainTarget,
+  privateKey: string,
+  feeRecipient: string
+): Promise<string> {
+  console.log(`\n📡 Connecting to ${chain.name} (chainId ${chain.chainId})...`);
+
+  const provider = new ethers.JsonRpcProvider(chain.rpcUrl);
+  const wallet   = new ethers.Wallet(privateKey, provider);
+  const address  = await wallet.getAddress();
+  const balance  = await provider.getBalance(address);
+
+  console.log(`   Deployer : ${address}`);
+  console.log(`   Balance  : ${ethers.formatEther(balance)} native`);
+
+  if (balance === 0n) {
+    throw new Error(
+      `No native balance on ${chain.name}. Fund the deployer wallet with testnet gas first.`
+    );
+  }
+
+  const network = await provider.getNetwork();
+  if (Number(network.chainId) !== chain.chainId) {
+    throw new Error(
+      `Chain ID mismatch on ${chain.name}: expected ${chain.chainId}, got ${network.chainId}`
+    );
+  }
+
+  const factory  = new ethers.ContractFactory(ABI, BYTECODE, wallet);
+  console.log(`   Deploying FeeRouter (feeBps=${FEE_BPS}, feeRecipient=${feeRecipient})...`);
+
+  const contract = await factory.deploy(feeRecipient, FEE_BPS);
+  const deployed = await contract.waitForDeployment();
+  const addr     = await deployed.getAddress();
+
+  console.log(`   ✅ Address : ${addr}`);
+  console.log(`   🔍 Explorer: ${chain.explorerUrl}/address/${addr}`);
+
+  return addr;
+}
+
+async function main() {
+  const privateKey   = process.env.DEPLOYER_PRIVATE_KEY;
+  const feeRecipient = process.env.FEE_RECIPIENT;
+
+  if (!privateKey) throw new Error("DEPLOYER_PRIVATE_KEY secret is not set.");
+  if (!feeRecipient) throw new Error("FEE_RECIPIENT secret is not set.");
+  if (!ethers.isAddress(feeRecipient)) {
+    throw new Error(`FEE_RECIPIENT is not a valid address: ${feeRecipient}`);
+  }
+
+  console.log("🚀 FeeRouter Deployment");
+  console.log("════════════════════════════════════════");
+  console.log(`Fee recipient : ${feeRecipient}`);
+  console.log(`Fee rate      : ${FEE_BPS} bps (${FEE_BPS / 100}%)`);
+
+  const deployments: Record<string, string> = {};
+  const failed: string[] = [];
+
+  for (const chain of CHAINS) {
+    try {
+      deployments[chain.chainId.toString()] = await deployToChain(chain, privateKey, feeRecipient);
+    } catch (err) {
+      console.error(`\n❌ Failed on ${chain.name}: ${(err as Error).message}`);
+      failed.push(chain.name);
+    }
+  }
+
+  // Write deployments for the frontend
+  const outDir  = resolve(__dirname, "../../artifacts/arc-bridge/src/contracts");
+  const outFile = resolve(outDir, "deployments.json");
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(
+    outFile,
+    JSON.stringify({ deployments, feeBps: FEE_BPS, feeRecipient }, null, 2)
+  );
+
+  console.log("\n════════════════════════════════════════");
+  console.log("📄 Deployment summary");
+  for (const [chainId, addr] of Object.entries(deployments)) {
+    const chain = CHAINS.find((c) => c.chainId.toString() === chainId);
+    console.log(`   ${(chain?.name ?? chainId).padEnd(20)} ${addr}`);
+  }
+
+  if (failed.length > 0) {
+    console.log(`\n⚠️  Failed chains: ${failed.join(", ")}`);
+    console.log("   Fund the deployer with testnet gas and re-run.");
+    process.exit(1);
+  }
+
+  console.log(`\n✅ Saved to: ${outFile}`);
+  console.log("   Restart the bridge frontend to pick up the new addresses.\n");
+}
+
+main().catch((err) => {
+  console.error("\n💥 Fatal:", err.message);
+  process.exit(1);
+});

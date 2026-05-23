@@ -7,6 +7,7 @@ import {
   ATTESTATION_API,
 } from "./chains";
 import { calculateFee, formatUsdc } from "./config";
+import { FEE_ROUTER_ABI, getFeeRouterAddress } from "@/contracts/FeeRouterABI";
 
 export type BridgeStep =
   | "idle"
@@ -56,7 +57,7 @@ export async function connectWallet(): Promise<string> {
 
 export async function getWalletChainId(): Promise<number> {
   if (!window.ethereum) throw new Error("No wallet detected.");
-  const hexId = await window.ethereum.request({ method: "eth_chainId" }) as string;
+  const hexId = (await window.ethereum.request({ method: "eth_chainId" })) as string;
   return parseInt(hexId, 16);
 }
 
@@ -82,7 +83,6 @@ export async function switchToChain(chain: ChainConfig): Promise<void> {
           },
         ],
       });
-      // After adding, explicitly switch (some wallets require this)
       try {
         await window.ethereum.request({
           method: "wallet_switchEthereumChain",
@@ -97,7 +97,6 @@ export async function switchToChain(chain: ChainConfig): Promise<void> {
   }
 }
 
-/** Poll until the wallet's reported chain ID matches, or timeout. */
 async function waitForChainSwitch(expectedChainId: number, timeoutMs = 30000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -105,19 +104,14 @@ async function waitForChainSwitch(expectedChainId: number, timeoutMs = 30000): P
     const current = await getWalletChainId();
     if (current === expectedChainId) return;
   }
-  throw new Error(
-    "Chain switch timed out. Please switch networks manually and try again."
-  );
+  throw new Error("Chain switch timed out. Please switch networks manually and try again.");
 }
 
-export async function getUsdcBalance(
-  address: string,
-  chain: ChainConfig
-): Promise<string> {
+export async function getUsdcBalance(address: string, chain: ChainConfig): Promise<string> {
   try {
     const provider = new ethers.JsonRpcProvider(chain.rpcUrl);
-    const usdc = new ethers.Contract(chain.usdcAddress, USDC_ABI, provider);
-    const balance = await usdc.balanceOf(address);
+    const usdc     = new ethers.Contract(chain.usdcAddress, USDC_ABI, provider);
+    const balance  = await usdc.balanceOf(address);
     return ethers.formatUnits(balance, 6);
   } catch {
     return "0.000000";
@@ -132,11 +126,9 @@ function addressToBytes32(address: string): string {
 }
 
 function validateAmount(amount: string): bigint {
-  if (!amount || amount.trim() === "") {
-    throw new Error("Please enter an amount.");
-  }
+  if (!amount || amount.trim() === "") throw new Error("Please enter an amount.");
   const trimmed = amount.trim();
-  const parts = trimmed.split(".");
+  const parts   = trimmed.split(".");
   if (parts[1] && parts[1].length > 6) {
     throw new Error("Amount cannot have more than 6 decimal places (USDC has 6 decimals).");
   }
@@ -146,9 +138,7 @@ function validateAmount(amount: string): bigint {
   } catch {
     throw new Error("Invalid amount entered.");
   }
-  if (parsed <= 0n) {
-    throw new Error("Amount must be greater than zero.");
-  }
+  if (parsed <= 0n) throw new Error("Amount must be greater than zero.");
   return parsed;
 }
 
@@ -164,19 +154,11 @@ async function pollAttestation(
     await new Promise((r) => setTimeout(r, 5000));
     try {
       const res = await fetch(url);
-      if (!res.ok) {
-        onProgress(`Polling attestation... (attempt ${i + 1}/120)`);
-        continue;
-      }
-      const data = await res.json();
-      const messages: Array<{ attestation?: string; message?: string; status?: string }> =
-        data?.messages ?? [];
-      const found = messages.find(
-        (m) => m.attestation && m.attestation !== "PENDING" && m.message
-      );
-      if (found?.attestation && found?.message) {
-        return { message: found.message, attestation: found.attestation };
-      }
+      if (!res.ok) { onProgress(`Polling attestation... (attempt ${i + 1}/120)`); continue; }
+      const data     = await res.json();
+      const messages: Array<{ attestation?: string; message?: string }> = data?.messages ?? [];
+      const found    = messages.find((m) => m.attestation && m.attestation !== "PENDING" && m.message);
+      if (found?.attestation && found?.message) return { message: found.message, attestation: found.attestation };
       onProgress(`Waiting for attestation... (attempt ${i + 1}/120)`);
     } catch {
       onProgress(`Polling error, retrying... (attempt ${i + 1}/120)`);
@@ -185,53 +167,87 @@ async function pollAttestation(
   throw new Error("Attestation timed out after 10 minutes.");
 }
 
-export async function executeBridge(
+// ── Smart-contract path: single FeeRouter.bridge() call ───────────────────
+
+async function burnViaFeeRouter(
   fromChain: ChainConfig,
   toChain: ChainConfig,
-  amount: string,
-  recipientAddress: string,
+  grossAmountInUnits: bigint,
+  mintRecipient: string,
+  signer: ethers.Signer,
+  signerAddress: string,
+  feeRouterAddress: string,
   onStatusChange: (status: BridgeStatus) => void
-): Promise<void> {
-  // --- Pre-flight validation ---
-  if (fromChain.id === toChain.id) {
-    throw new Error("Source and destination chains must be different.");
-  }
-  if (!ethers.isAddress(recipientAddress)) {
-    throw new Error(`Invalid recipient address: ${recipientAddress}`);
-  }
+): Promise<{ burnTxHash: string; feeTxHash?: string }> {
+  const usdc          = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
+  const mintRecipient32 = addressToBytes32(mintRecipient);
 
-  const grossAmountInUnits = validateAmount(amount);
-  const fee = calculateFee(grossAmountInUnits);
+  // ── Step 1: Approve FeeRouter for the gross amount ─────────────────────
+  onStatusChange({ step: "approving", message: "Checking USDC allowance for FeeRouter..." });
 
-  if (fee.active && fee.bridgeAmount <= 0n) {
-    throw new Error("Amount is too small to cover the bridge fee.");
-  }
-
-  // Verify wallet is on the source chain
-  const currentChainId = await getWalletChainId();
-  if (currentChainId !== fromChain.id) {
-    throw new Error(
-      `Wallet is on the wrong network. Please switch to ${fromChain.name} first.`
-    );
+  const allowance: bigint = await usdc.allowance(signerAddress, feeRouterAddress);
+  if (allowance < grossAmountInUnits) {
+    const approveTx = await usdc.approve(feeRouterAddress, grossAmountInUnits);
+    onStatusChange({
+      step: "approving",
+      message: "Approval submitted, waiting for confirmation...",
+      txHash: approveTx.hash,
+    });
+    const approveReceipt = await approveTx.wait();
+    if (!approveReceipt) throw new Error("Approval transaction was not confirmed. Please try again.");
+  } else {
+    onStatusChange({ step: "approving", message: "Allowance sufficient, skipping approval." });
   }
 
-  const provider = await getProvider();
-  const signer = await provider.getSigner();
-  const signerAddress = await signer.getAddress();
+  // ── Step 2: FeeRouter.bridge() — fee + burn in one tx ─────────────────
+  onStatusChange({
+    step: "collecting",
+    message: "Sending bridge transaction (fee collected + burn in one step)...",
+  });
 
-  const usdc = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
-
-  // --- Step 1: Approve ---
-  // We only need approval for the bridgeAmount going to TokenMessenger.
-  // The fee transfer() is a direct send — no approval needed.
-  onStatusChange({ step: "approving", message: "Checking USDC allowance..." });
-
-  const currentAllowance: bigint = await usdc.allowance(
-    signerAddress,
+  const feeRouter = new ethers.Contract(feeRouterAddress, FEE_ROUTER_ABI, signer);
+  const bridgeTx  = await feeRouter.bridge(
+    grossAmountInUnits,
+    toChain.cctpDomain,
+    mintRecipient32,
+    fromChain.usdcAddress,
     fromChain.tokenMessenger
   );
 
-  if (currentAllowance < fee.bridgeAmount) {
+  onStatusChange({
+    step: "burning",
+    message: "Bridge transaction submitted, waiting for confirmation...",
+    burnTxHash: bridgeTx.hash,
+  });
+
+  const bridgeReceipt = await bridgeTx.wait();
+  if (!bridgeReceipt) {
+    throw new Error("Bridge transaction was not confirmed. Please check the explorer and try again.");
+  }
+
+  return { burnTxHash: bridgeReceipt.hash };
+}
+
+// ── Fallback path: manual approve → transfer fee → depositForBurn ──────────
+
+async function burnWithManualFee(
+  fromChain: ChainConfig,
+  toChain: ChainConfig,
+  grossAmountInUnits: bigint,
+  mintRecipient: string,
+  signer: ethers.Signer,
+  signerAddress: string,
+  onStatusChange: (status: BridgeStatus) => void
+): Promise<{ burnTxHash: string; feeTxHash?: string }> {
+  const fee           = calculateFee(grossAmountInUnits);
+  const mintRecipient32 = addressToBytes32(mintRecipient);
+  const usdc          = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
+
+  // ── Step 1: Approve TokenMessenger for bridge amount only ──────────────
+  onStatusChange({ step: "approving", message: "Checking USDC allowance..." });
+
+  const allowance: bigint = await usdc.allowance(signerAddress, fromChain.tokenMessenger);
+  if (allowance < fee.bridgeAmount) {
     const approveTx = await usdc.approve(fromChain.tokenMessenger, fee.bridgeAmount);
     onStatusChange({
       step: "approving",
@@ -239,56 +255,37 @@ export async function executeBridge(
       txHash: approveTx.hash,
     });
     const approveReceipt = await approveTx.wait();
-    if (!approveReceipt) {
-      throw new Error("Approval transaction was not confirmed. Please try again.");
-    }
+    if (!approveReceipt) throw new Error("Approval transaction was not confirmed. Please try again.");
   } else {
-    onStatusChange({
-      step: "approving",
-      message: "Allowance sufficient, skipping approval.",
-    });
+    onStatusChange({ step: "approving", message: "Allowance sufficient, skipping approval." });
   }
 
-  // --- Step 2: Collect fee (if active) ---
+  // ── Step 2: Transfer fee ───────────────────────────────────────────────
   let feeTxHash: string | undefined;
   if (fee.active) {
     onStatusChange({
       step: "collecting",
       message: `Collecting protocol fee (${fee.feeBps / 100}%)...`,
     });
-
     const feeTx = await usdc.transfer(fee.feeRecipient, fee.feeAmount);
     onStatusChange({
       step: "collecting",
       message: `Fee of ${formatUsdc(fee.feeAmount)} USDC submitted...`,
       feeTxHash: feeTx.hash,
     });
-
     const feeReceipt = await feeTx.wait();
-    if (!feeReceipt) {
-      throw new Error("Fee transaction was not confirmed. Please try again.");
-    }
+    if (!feeReceipt) throw new Error("Fee transaction was not confirmed. Please try again.");
     feeTxHash = feeReceipt.hash;
   }
 
-  // --- Step 3: Burn (depositForBurn) ---
-  onStatusChange({
-    step: "burning",
-    message: "Initiating cross-chain transfer...",
-    feeTxHash,
-  });
+  // ── Step 3: depositForBurn ─────────────────────────────────────────────
+  onStatusChange({ step: "burning", message: "Initiating cross-chain transfer...", feeTxHash });
 
-  const tokenMessenger = new ethers.Contract(
-    fromChain.tokenMessenger,
-    TOKEN_MESSENGER_ABI,
-    signer
-  );
-
-  const mintRecipient = addressToBytes32(recipientAddress);
+  const tokenMessenger = new ethers.Contract(fromChain.tokenMessenger, TOKEN_MESSENGER_ABI, signer);
   const burnTx = await tokenMessenger.depositForBurn(
     fee.bridgeAmount,
     toChain.cctpDomain,
-    mintRecipient,
+    mintRecipient32,
     fromChain.usdcAddress
   );
 
@@ -304,39 +301,89 @@ export async function executeBridge(
     throw new Error("Burn transaction was not confirmed. Please check the explorer and try again.");
   }
 
-  // --- Step 4: Attest ---
+  return { burnTxHash: burnReceipt.hash, feeTxHash };
+}
+
+// ── Main entry point ────────────────────────────────────────────────────────
+
+export async function executeBridge(
+  fromChain: ChainConfig,
+  toChain: ChainConfig,
+  amount: string,
+  recipientAddress: string,
+  onStatusChange: (status: BridgeStatus) => void
+): Promise<void> {
+  if (fromChain.id === toChain.id) {
+    throw new Error("Source and destination chains must be different.");
+  }
+  if (!ethers.isAddress(recipientAddress)) {
+    throw new Error(`Invalid recipient address: ${recipientAddress}`);
+  }
+
+  const grossAmountInUnits = validateAmount(amount);
+  const fee = calculateFee(grossAmountInUnits);
+  if (fee.active && fee.bridgeAmount <= 0n) {
+    throw new Error("Amount is too small to cover the bridge fee.");
+  }
+
+  const currentChainId = await getWalletChainId();
+  if (currentChainId !== fromChain.id) {
+    throw new Error(`Wallet is on the wrong network. Please switch to ${fromChain.name} first.`);
+  }
+
+  const provider      = await getProvider();
+  const signer        = await provider.getSigner();
+  const signerAddress = await signer.getAddress();
+
+  // Choose burn path: FeeRouter contract (preferred) or manual fallback
+  const feeRouterAddress = getFeeRouterAddress(fromChain.id);
+  let burnTxHash: string;
+  let feeTxHash: string | undefined;
+
+  if (feeRouterAddress) {
+    // ── Smart contract path ──────────────────────────────────────────────
+    const result = await burnViaFeeRouter(
+      fromChain, toChain, grossAmountInUnits, recipientAddress,
+      signer, signerAddress, feeRouterAddress, onStatusChange
+    );
+    burnTxHash = result.burnTxHash;
+  } else {
+    // ── Manual fallback path ─────────────────────────────────────────────
+    const result = await burnWithManualFee(
+      fromChain, toChain, grossAmountInUnits, recipientAddress,
+      signer, signerAddress, onStatusChange
+    );
+    burnTxHash = result.burnTxHash;
+    feeTxHash  = result.feeTxHash;
+  }
+
+  // ── Attest ────────────────────────────────────────────────────────────
   onStatusChange({
     step: "attesting",
     message: "Burn confirmed. Requesting attestation from Circle...",
     feeTxHash,
-    burnTxHash: burnReceipt.hash,
+    burnTxHash,
   });
 
   const attestationResult = await pollAttestation(
     fromChain.cctpDomain,
-    burnReceipt.hash,
-    (msg) =>
-      onStatusChange({
-        step: "attesting",
-        message: msg,
-        feeTxHash,
-        burnTxHash: burnReceipt.hash,
-      })
+    burnTxHash,
+    (msg) => onStatusChange({ step: "attesting", message: msg, feeTxHash, burnTxHash })
   );
 
-  // --- Step 5: Switch to destination and mint ---
+  // ── Switch + Mint ──────────────────────────────────────────────────────
   onStatusChange({
     step: "minting",
     message: `Switching to ${toChain.name} to mint USDC...`,
     feeTxHash,
-    burnTxHash: burnReceipt.hash,
+    burnTxHash,
   });
 
   await switchToChain(toChain);
   await waitForChainSwitch(toChain.id);
 
   const destProvider = await getProvider();
-  const destSigner = await destProvider.getSigner();
+  const destSigner   = await destProvider.getSigner();
 
   const messageTransmitter = new ethers.Contract(
     toChain.messageTransmitter,
@@ -344,12 +391,7 @@ export async function executeBridge(
     destSigner
   );
 
-  onStatusChange({
-    step: "minting",
-    message: "Minting USDC on destination chain...",
-    feeTxHash,
-    burnTxHash: burnReceipt.hash,
-  });
+  onStatusChange({ step: "minting", message: "Minting USDC on destination chain...", feeTxHash, burnTxHash });
 
   const mintTx = await messageTransmitter.receiveMessage(
     attestationResult.message,
@@ -360,7 +402,7 @@ export async function executeBridge(
     step: "minting",
     message: "Mint transaction submitted, waiting for confirmation...",
     feeTxHash,
-    burnTxHash: burnReceipt.hash,
+    burnTxHash,
     mintTxHash: mintTx.hash,
   });
 
@@ -376,7 +418,7 @@ export async function executeBridge(
     step: "done",
     message: `Bridge complete! ${receivedAmount} USDC has arrived on ${toChain.name}.`,
     feeTxHash,
-    burnTxHash: burnReceipt.hash,
+    burnTxHash,
     mintTxHash: mintReceipt.hash,
   });
 }

@@ -33,7 +33,7 @@ export interface FeeBreakdown {
  * Always returns a valid breakdown — feeAmount is 0n when fees are inactive.
  */
 export function calculateFee(grossAmountInUnits: bigint): FeeBreakdown {
-  if (!isFeeActive() || FEE_BPS === 0) {
+  if (!isFeeActive()) {
     return {
       feeAmount: 0n,
       bridgeAmount: grossAmountInUnits,
