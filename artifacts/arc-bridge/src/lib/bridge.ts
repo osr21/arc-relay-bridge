@@ -7,7 +7,7 @@ import {
   MESSAGE_TRANSMITTER_ABI,
   ATTESTATION_API,
 } from "./chains";
-import { calculateFee, formatUsdc } from "./config";
+import { calculateFee, formatUsdc, FEE_BPS } from "./config";
 import { FEE_ROUTER_ABI, getFeeRouterAddress } from "@/contracts/FeeRouterABI";
 
 export type BridgeStep =
@@ -465,13 +465,17 @@ async function burnViaFeeRouter(
   });
 
   const feeRouter = new ethers.Contract(feeRouterAddress, FEE_ROUTER_ABI, signer);
-  // FeeRouter v2: usdc and tokenMessenger are immutable on the contract —
-  // only 4 params needed (removed caller-supplied address vectors).
+  // FeeRouter v3: 5 params — last arg is slippage guard (minBridgeAmount).
+  // Computed from the expected fee so the tx reverts if feeBps was raised
+  // between the user signing and the tx being mined.
+  const feeBpsBI       = BigInt(FEE_BPS);
+  const minBridgeAmount = grossAmountInUnits - (grossAmountInUnits * feeBpsBI) / 10000n;
   const bridgeTx  = await feeRouter.bridge(
     grossAmountInUnits,
     toChain.cctpDomain,
     mintRecipient32,
-    fromChain.minFinalityThreshold ?? 1000
+    fromChain.minFinalityThreshold ?? 1000,
+    minBridgeAmount
   );
 
   onStatusChange({
