@@ -9,6 +9,7 @@ import {
   getUsdcBalance,
   switchToChain,
   executeBridge,
+  friendlyError,
 } from "@/lib/bridge";
 import { calculateFee, formatUsdc, FEE_BPS, isFeeActive } from "@/lib/config";
 import { WalletButton } from "@/components/WalletButton";
@@ -41,7 +42,9 @@ export default function BridgePage() {
     message: "",
   });
 
-  const currentStepRef = useRef<ActiveStep | null>(null);
+  const currentStepRef  = useRef<ActiveStep | null>(null);
+  const lastBurnTxRef   = useRef<string | undefined>(undefined);
+  const lastFeeTxRef    = useRef<string | undefined>(undefined);
 
   function handleWalletConnect(addr: string, chainId: number) {
     setWalletAddress(addr);
@@ -128,11 +131,16 @@ export default function BridgePage() {
     if (!amount || isNaN(parsedAmount) || parsedAmount <= 0) return;
 
     currentStepRef.current = null;
+    lastBurnTxRef.current  = undefined;
+    lastFeeTxRef.current   = undefined;
     setBridgeStatus({ step: "approving", message: "Starting bridge..." });
 
     try {
       await executeBridge(fromChain, toChain, amount, effectiveRecipient, (status) => {
         setBridgeStatus(status);
+        // Track tx hashes so the error handler can preserve them if we throw later
+        if (status.burnTxHash) lastBurnTxRef.current = status.burnTxHash;
+        if (status.feeTxHash)  lastFeeTxRef.current  = status.feeTxHash;
         if (
           status.step === "approving"  ||
           status.step === "collecting" ||
@@ -145,11 +153,14 @@ export default function BridgePage() {
       });
       await refreshBalances();
     } catch (err: unknown) {
+      // Preserve any tx hashes already emitted — critical for attestation timeout recovery
       setBridgeStatus({
         step: "error",
         message: "Bridge failed",
-        error: (err as Error).message ?? "Unknown error",
+        error: friendlyError(err),
         failedAtStep: currentStepRef.current ?? undefined,
+        feeTxHash:    lastFeeTxRef.current,
+        burnTxHash:   lastBurnTxRef.current,
       });
     }
   }

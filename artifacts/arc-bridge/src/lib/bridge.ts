@@ -97,7 +97,35 @@ export async function switchToChain(chain: ChainConfig): Promise<void> {
   }
 }
 
-async function waitForChainSwitch(expectedChainId: number, timeoutMs = 30000): Promise<void> {
+/** Normalise any thrown error into a clean, user-facing message. */
+export function friendlyError(err: unknown): string {
+  const msg = (err as Error)?.message ?? String(err);
+
+  // MetaMask / EIP-1193 user rejection
+  if (
+    msg.includes("user rejected") ||
+    msg.includes("User denied") ||
+    msg.includes("ACTION_REJECTED") ||
+    (err as { code?: unknown })?.code === 4001
+  ) {
+    return "Transaction cancelled — you rejected the request in your wallet.";
+  }
+
+  // Insufficient funds for gas
+  if (msg.includes("insufficient funds")) {
+    return "Insufficient funds for gas. Add native tokens (ETH / AVAX / etc.) to your wallet.";
+  }
+
+  // Network / RPC errors
+  if (msg.includes("network") || msg.includes("could not detect")) {
+    return "Network error — check your internet connection and try again.";
+  }
+
+  // Return the first line only (ethers wraps long messages with newlines)
+  return msg.split("\n")[0];
+}
+
+async function waitForChainSwitch(expectedChainId: number, timeoutMs = 60000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 600));
@@ -381,6 +409,17 @@ export async function executeBridge(
   const provider      = await getProvider();
   const signer        = await provider.getSigner();
   const signerAddress = await signer.getAddress();
+
+  // Pre-flight balance check — fail early with a clear message
+  const usdcForCheck = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
+  const usdcBalance: bigint = await usdcForCheck.balanceOf(signerAddress);
+  if (usdcBalance < grossAmountInUnits) {
+    const have = ethers.formatUnits(usdcBalance, 6);
+    const need = ethers.formatUnits(grossAmountInUnits, 6);
+    throw new Error(
+      `Insufficient USDC balance. You have ${have} USDC but need ${need} USDC.`
+    );
+  }
 
   // Choose burn path: FeeRouter contract (preferred) or manual fallback
   const feeRouterAddress = getFeeRouterAddress(fromChain.id);

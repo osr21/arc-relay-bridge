@@ -46,6 +46,14 @@ export default defineConfig({
         ]
       : []),
   ],
+  define: {
+    // Expose FEE_RECIPIENT (set in Replit Secrets) as VITE_FEE_RECIPIENT so
+    // config.ts can read it. Vite only forwards VITE_* vars by default; this
+    // bridges the gap without renaming the secret.
+    "import.meta.env.VITE_FEE_RECIPIENT": JSON.stringify(
+      process.env.VITE_FEE_RECIPIENT || process.env.FEE_RECIPIENT || ""
+    ),
+  },
   resolve: {
     alias: {
       "@": path.resolve(import.meta.dirname, "src"),
