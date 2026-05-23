@@ -40,7 +40,7 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 
 | Chain | CCTP Domain | Chain ID |
 |---|---|---|
-| Arc Testnet | 7 | 5042002 |
+| Arc Testnet | 26 | 5042002 |
 | Ethereum Sepolia | 0 | 11155111 |
 | Base Sepolia | 6 | 84532 |
 | Avalanche Fuji | 1 | 43113 |

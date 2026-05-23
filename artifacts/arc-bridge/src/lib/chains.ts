@@ -22,7 +22,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     shortName: "Arc",
     rpcUrl: "https://rpc.drpc.testnet.arc.network",
     explorerUrl: "https://explorer.testnet.arc.network",
-    cctpDomain: 7,
+    cctpDomain: 26,
     usdcAddress: "0x3600000000000000000000000000000000000000",
     tokenMessenger: "0x8FE6b999dC680CCfDD5bF7Eb0974218be2542dAd",
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
