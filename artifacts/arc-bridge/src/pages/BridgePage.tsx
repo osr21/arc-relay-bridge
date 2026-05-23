@@ -199,7 +199,7 @@ export default function BridgePage() {
   const fromBalanceNum = safeParseBalance(fromBalance);
 
   function applyMaxBalance() {
-    if (fromBalanceNum !== null) setAmount(fromBalanceNum.toFixed(6));
+    if (fromBalance !== "—" && fromBalance !== "0.000000") setAmount(fromBalance);
   }
 
   return (
@@ -221,7 +221,7 @@ export default function BridgePage() {
             className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
             Faucet <ExternalLink className="w-3 h-3" />
           </a>
-          <a href="https://explorer.testnet.arc.network" target="_blank" rel="noopener noreferrer"
+          <a href="https://sepolia.etherscan.io" target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
             Explorer <ExternalLink className="w-3 h-3" />
           </a>

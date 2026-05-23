@@ -53,7 +53,11 @@ export async function getProvider(): Promise<ethers.BrowserProvider> {
 export async function connectWallet(): Promise<string> {
   const provider = await getProvider();
   const accounts = await provider.send("eth_requestAccounts", []);
-  return (accounts as string[])[0];
+  const list = accounts as string[];
+  if (!list || list.length === 0) {
+    throw new Error("No accounts returned. Please unlock your wallet and try again.");
+  }
+  return list[0];
 }
 
 /** Prompt MetaMask to add the chain's USDC token to the wallet token list. */
@@ -88,6 +92,7 @@ export async function switchToChain(chain: ChainConfig): Promise<void> {
   } catch (err: unknown) {
     const switchError = err as { code?: number };
     if (switchError.code === 4902) {
+      const explorerUrls = chain.explorerUrl ? [chain.explorerUrl] : [];
       await window.ethereum.request({
         method: "wallet_addEthereumChain",
         params: [
@@ -96,7 +101,7 @@ export async function switchToChain(chain: ChainConfig): Promise<void> {
             chainName: chain.name,
             nativeCurrency: chain.nativeCurrency,
             rpcUrls: [chain.rpcUrl],
-            blockExplorerUrls: [chain.explorerUrl],
+            ...(explorerUrls.length > 0 && { blockExplorerUrls: explorerUrls }),
           },
         ],
       });
