@@ -170,6 +170,31 @@ function validateAmount(amount: string): bigint {
   return parsed;
 }
 
+// ── MessageSent parsing ───────────────────────────────────────────────────────
+// The MessageTransmitter emits MessageSent(bytes message) when depositForBurn is called.
+// Parsing it from the receipt gives us the raw message bytes we need for receiveMessage,
+// and lets us compute the message hash to query Circle's /v1/attestations/ endpoint.
+
+const MSG_SENT_IFACE = new ethers.Interface(["event MessageSent(bytes message)"]);
+
+function parseMessageSent(
+  receipt: ethers.TransactionReceipt,
+  messageTransmitterAddress: string
+): string | undefined {
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== messageTransmitterAddress.toLowerCase()) continue;
+    try {
+      const parsed = MSG_SENT_IFACE.parseLog(log);
+      if (parsed?.name === "MessageSent") {
+        return parsed.args[0] as string;
+      }
+    } catch { /* not this log */ }
+  }
+  return undefined;
+}
+
+// ── Attestation fetch helpers ─────────────────────────────────────────────────
+
 type AttestationMessage = {
   attestation?: string;
   message?: string;
@@ -180,6 +205,10 @@ type AttestationMessage = {
 type FetchResult =
   | { ok: true;  messages: AttestationMessage[] }
   | { ok: false; diagnostic: string };
+
+type HashResult =
+  | { ok: true;  attestation: string }
+  | { ok: false; status: string; diagnostic: string };
 
 async function fetchAttestation(
   sourceDomain: number,
@@ -241,22 +270,63 @@ async function fetchAttestation(
   return { ok: false, diagnostic: errors.join(" | ") };
 }
 
+/** Poll the content-based /v1/attestations/{messageHash} endpoint. */
+async function fetchAttestationByHash(messageHash: string): Promise<HashResult> {
+  try {
+    const res = await fetch(`/api/attest/hash/${messageHash}`);
+    if (!res.ok) return { ok: false, status: "", diagnostic: `proxy: ${res.status}` };
+    const data = await res.json() as { attestation: string | null; status: string | null; diagnostic: string };
+    if (data.diagnostic) return { ok: false, status: data.status ?? "", diagnostic: data.diagnostic };
+    if (data.attestation && data.attestation !== "PENDING") {
+      return { ok: true, attestation: data.attestation };
+    }
+    return { ok: false, status: data.status ?? "PENDING", diagnostic: `hash: ${data.status ?? "pending"}` };
+  } catch (e) {
+    return { ok: false, status: "", diagnostic: `proxy error: ${e instanceof Error ? e.message.slice(0, 60) : "unknown"}` };
+  }
+}
+
 async function pollAttestation(
   sourceDomain: number,
   burnTxHash: string,
+  messageBytes: string | undefined,
   onProgress: (msg: string) => void
 ): Promise<{ message: string; attestation: string }> {
-  onProgress("Waiting for Circle attestation (this can take a few minutes on testnet)...");
+  const messageHash = messageBytes ? ethers.keccak256(messageBytes) : undefined;
+
+  onProgress(
+    messageHash
+      ? "Burn confirmed. Waiting for Circle attestation via message hash…"
+      : "Burn confirmed. Waiting for Circle attestation (this can take a few minutes on testnet)…"
+  );
 
   // 240 attempts × 5 s = 20 minutes total
   for (let i = 0; i < 240; i++) {
     await new Promise((r) => setTimeout(r, 5000));
 
-    const result = await fetchAttestation(sourceDomain, burnTxHash);
     const attempt = `${i + 1}/240`;
     const elapsed = Math.floor(((i + 1) * 5) / 60);
     const elapsedStr = elapsed > 0 ? ` · ${elapsed}m` : "";
 
+    // ── Primary: message-hash endpoint (works regardless of source chain) ──
+    if (messageHash && messageBytes) {
+      const hashResult = await fetchAttestationByHash(messageHash);
+      if (hashResult.ok) {
+        return { message: messageBytes, attestation: hashResult.attestation };
+      }
+      // Show the hash-based status unless it's just "pending" (too noisy)
+      const diag = hashResult.diagnostic;
+      const isJustPending = diag.startsWith("hash: pending") || diag.startsWith("hash: PENDING");
+      if (!isJustPending) {
+        onProgress(`Waiting for attestation… (${attempt}${elapsedStr}) — ${diag}`);
+      } else {
+        onProgress(`Waiting for attestation… (${attempt}${elapsedStr})`);
+      }
+      continue;
+    }
+
+    // ── Fallback: tx-hash endpoint ──────────────────────────────────────────
+    const result = await fetchAttestation(sourceDomain, burnTxHash);
     if (!result.ok) {
       onProgress(`Waiting for attestation… (${attempt}${elapsedStr}) — ${result.diagnostic}`);
       continue;
@@ -270,7 +340,6 @@ async function pollAttestation(
       return { message: complete.message, attestation: complete.attestation };
     }
 
-    // API responded but attestation is still pending
     const status = messages[0]?.status ?? messages[0]?.attestation ?? "pending";
     onProgress(`Attestation ${status}${elapsedStr} (${attempt})`);
   }
@@ -293,7 +362,7 @@ async function burnViaFeeRouter(
   signerAddress: string,
   feeRouterAddress: string,
   onStatusChange: (status: BridgeStatus) => void
-): Promise<{ burnTxHash: string; feeTxHash?: string }> {
+): Promise<{ burnTxHash: string; feeTxHash?: string; messageBytes?: string }> {
   const usdc          = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
   const mintRecipient32 = addressToBytes32(mintRecipient);
 
@@ -340,7 +409,8 @@ async function burnViaFeeRouter(
     throw new Error("Bridge transaction was not confirmed. Please check the explorer and try again.");
   }
 
-  return { burnTxHash: bridgeReceipt.hash };
+  const messageBytes = parseMessageSent(bridgeReceipt, fromChain.messageTransmitter);
+  return { burnTxHash: bridgeReceipt.hash, messageBytes };
 }
 
 // ── Fallback path: manual approve → transfer fee → depositForBurn ──────────
@@ -353,7 +423,7 @@ async function burnWithManualFee(
   signer: ethers.Signer,
   signerAddress: string,
   onStatusChange: (status: BridgeStatus) => void
-): Promise<{ burnTxHash: string; feeTxHash?: string }> {
+): Promise<{ burnTxHash: string; feeTxHash?: string; messageBytes?: string }> {
   const fee           = calculateFee(grossAmountInUnits);
   const mintRecipient32 = addressToBytes32(mintRecipient);
   const usdc          = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
@@ -416,7 +486,8 @@ async function burnWithManualFee(
     throw new Error("Burn transaction was not confirmed. Please check the explorer and try again.");
   }
 
-  return { burnTxHash: burnReceipt.hash, feeTxHash };
+  const messageBytes = parseMessageSent(burnReceipt, fromChain.messageTransmitter);
+  return { burnTxHash: burnReceipt.hash, feeTxHash, messageBytes };
 }
 
 // ── Main entry point ────────────────────────────────────────────────────────
@@ -465,6 +536,7 @@ export async function executeBridge(
   const feeRouterAddress = getFeeRouterAddress(fromChain.id);
   let burnTxHash: string;
   let feeTxHash: string | undefined;
+  let messageBytes: string | undefined;
 
   if (feeRouterAddress) {
     // ── Smart contract path ──────────────────────────────────────────────
@@ -472,21 +544,25 @@ export async function executeBridge(
       fromChain, toChain, grossAmountInUnits, recipientAddress,
       signer, signerAddress, feeRouterAddress, onStatusChange
     );
-    burnTxHash = result.burnTxHash;
+    burnTxHash   = result.burnTxHash;
+    messageBytes = result.messageBytes;
   } else {
     // ── Manual fallback path ─────────────────────────────────────────────
     const result = await burnWithManualFee(
       fromChain, toChain, grossAmountInUnits, recipientAddress,
       signer, signerAddress, onStatusChange
     );
-    burnTxHash = result.burnTxHash;
-    feeTxHash  = result.feeTxHash;
+    burnTxHash   = result.burnTxHash;
+    feeTxHash    = result.feeTxHash;
+    messageBytes = result.messageBytes;
   }
 
   // ── Attest ────────────────────────────────────────────────────────────
   onStatusChange({
     step: "attesting",
-    message: "Burn confirmed. Requesting attestation from Circle...",
+    message: messageBytes
+      ? "Burn confirmed. Fetching Circle attestation via message hash…"
+      : "Burn confirmed. Requesting attestation from Circle...",
     feeTxHash,
     burnTxHash,
   });
@@ -494,6 +570,7 @@ export async function executeBridge(
   const attestationResult = await pollAttestation(
     fromChain.cctpDomain,
     burnTxHash,
+    messageBytes,
     (msg) => onStatusChange({ step: "attesting", message: msg, feeTxHash, burnTxHash })
   );
 
