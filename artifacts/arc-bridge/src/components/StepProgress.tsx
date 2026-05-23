@@ -1,25 +1,35 @@
-import { BridgeStep } from "@/lib/bridge";
+import { BridgeStep, ActiveStep } from "@/lib/bridge";
 import { cn } from "@/lib/utils";
 import { Check, Loader2, X } from "lucide-react";
 
-const STEPS: { key: BridgeStep; label: string }[] = [
+const STEPS: { key: ActiveStep; label: string }[] = [
   { key: "approving", label: "Approve" },
   { key: "burning", label: "Burn" },
   { key: "attesting", label: "Attest" },
   { key: "minting", label: "Mint" },
-  { key: "done", label: "Done" },
 ];
 
-const STEP_ORDER = ["approving", "burning", "attesting", "minting", "done"];
+const STEP_ORDER: ActiveStep[] = ["approving", "burning", "attesting", "minting"];
 
-function getStepState(stepKey: string, currentStep: BridgeStep): "done" | "active" | "pending" | "error" {
-  if (currentStep === "error") {
-    const currentIdx = STEP_ORDER.indexOf(currentStep);
-    const stepIdx = STEP_ORDER.indexOf(stepKey);
-    return stepIdx < currentIdx ? "done" : stepIdx === currentIdx ? "error" : "pending";
-  }
-  const currentIdx = STEP_ORDER.indexOf(currentStep);
+function getStepState(
+  stepKey: ActiveStep,
+  currentStep: BridgeStep,
+  failedAtStep?: ActiveStep
+): "done" | "active" | "pending" | "error" {
   const stepIdx = STEP_ORDER.indexOf(stepKey);
+
+  if (currentStep === "done") return "done";
+
+  if (currentStep === "error") {
+    const failedIdx = failedAtStep ? STEP_ORDER.indexOf(failedAtStep) : -1;
+    if (failedIdx === -1) return "pending";
+    if (stepIdx < failedIdx) return "done";
+    if (stepIdx === failedIdx) return "error";
+    return "pending";
+  }
+
+  const currentIdx = STEP_ORDER.indexOf(currentStep as ActiveStep);
+  if (currentIdx === -1) return "pending";
   if (stepIdx < currentIdx) return "done";
   if (stepIdx === currentIdx) return "active";
   return "pending";
@@ -27,15 +37,16 @@ function getStepState(stepKey: string, currentStep: BridgeStep): "done" | "activ
 
 interface StepProgressProps {
   step: BridgeStep;
+  failedAtStep?: ActiveStep;
 }
 
-export function StepProgress({ step }: StepProgressProps) {
+export function StepProgress({ step, failedAtStep }: StepProgressProps) {
   if (step === "idle") return null;
 
   return (
     <div className="flex items-center gap-1 w-full">
       {STEPS.map((s, idx) => {
-        const state = getStepState(s.key, step);
+        const state = getStepState(s.key, step, failedAtStep);
         return (
           <div key={s.key} className="flex items-center flex-1 min-w-0">
             <div className="flex flex-col items-center gap-1">

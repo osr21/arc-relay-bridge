@@ -16,6 +16,8 @@ export type BridgeStep =
   | "done"
   | "error";
 
+export type ActiveStep = "approving" | "burning" | "attesting" | "minting";
+
 export interface BridgeStatus {
   step: BridgeStep;
   message: string;
@@ -23,12 +25,15 @@ export interface BridgeStatus {
   burnTxHash?: string;
   mintTxHash?: string;
   error?: string;
+  failedAtStep?: ActiveStep;
 }
 
 declare global {
   interface Window {
     ethereum?: ethers.Eip1193Provider & {
       request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+      on?: (event: string, handler: (...args: unknown[]) => void) => void;
+      removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
     };
   }
 }
@@ -47,9 +52,9 @@ export async function connectWallet(): Promise<string> {
 }
 
 export async function getWalletChainId(): Promise<number> {
-  const provider = await getProvider();
-  const network = await provider.getNetwork();
-  return Number(network.chainId);
+  if (!window.ethereum) throw new Error("No wallet detected.");
+  const hexId = await window.ethereum.request({ method: "eth_chainId" }) as string;
+  return parseInt(hexId, 16);
 }
 
 export async function switchToChain(chain: ChainConfig): Promise<void> {
@@ -74,10 +79,32 @@ export async function switchToChain(chain: ChainConfig): Promise<void> {
           },
         ],
       });
+      // After adding, explicitly switch (some wallets require this)
+      try {
+        await window.ethereum.request({
+          method: "wallet_switchEthereumChain",
+          params: [{ chainId: chain.hexId }],
+        });
+      } catch {
+        // Ignore — wallet_addEthereumChain may have already switched
+      }
     } else {
       throw err;
     }
   }
+}
+
+/** Poll until the wallet chain matches expectedChainId, or timeout. */
+async function waitForChainSwitch(expectedChainId: number, timeoutMs = 30000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 600));
+    const current = await getWalletChainId();
+    if (current === expectedChainId) return;
+  }
+  throw new Error(
+    "Chain switch timed out. Please switch networks manually and try again."
+  );
 }
 
 export async function getUsdcBalance(
@@ -90,12 +117,36 @@ export async function getUsdcBalance(
     const balance = await usdc.balanceOf(address);
     return ethers.formatUnits(balance, 6);
   } catch {
-    return "0.00";
+    return "0.000000";
   }
 }
 
 function addressToBytes32(address: string): string {
-  return ethers.zeroPadValue(address, 32);
+  if (!ethers.isAddress(address)) {
+    throw new Error(`Invalid recipient address: ${address}`);
+  }
+  return ethers.zeroPadValue(ethers.getAddress(address), 32);
+}
+
+function validateAmount(amount: string): bigint {
+  if (!amount || amount.trim() === "") {
+    throw new Error("Please enter an amount.");
+  }
+  const trimmed = amount.trim();
+  const parts = trimmed.split(".");
+  if (parts[1] && parts[1].length > 6) {
+    throw new Error("Amount cannot have more than 6 decimal places (USDC has 6 decimals).");
+  }
+  let parsed: bigint;
+  try {
+    parsed = ethers.parseUnits(trimmed, 6);
+  } catch {
+    throw new Error("Invalid amount entered.");
+  }
+  if (parsed <= 0n) {
+    throw new Error("Amount must be greater than zero.");
+  }
+  return parsed;
 }
 
 async function pollAttestation(
@@ -111,19 +162,21 @@ async function pollAttestation(
     try {
       const res = await fetch(url);
       if (!res.ok) {
-        onProgress(`Polling attestation... (attempt ${i + 1})`);
+        onProgress(`Polling attestation... (attempt ${i + 1}/120)`);
         continue;
       }
       const data = await res.json();
       const messages: Array<{ attestation?: string; message?: string; status?: string }> =
         data?.messages ?? [];
-      const found = messages.find((m) => m.attestation && m.attestation !== "PENDING");
+      const found = messages.find(
+        (m) => m.attestation && m.attestation !== "PENDING" && m.message
+      );
       if (found?.attestation && found?.message) {
         return { message: found.message, attestation: found.attestation };
       }
       onProgress(`Waiting for attestation... (attempt ${i + 1}/120)`);
     } catch {
-      onProgress(`Polling error, retrying... (attempt ${i + 1})`);
+      onProgress(`Polling error, retrying... (attempt ${i + 1}/120)`);
     }
   }
   throw new Error("Attestation timed out after 10 minutes.");
@@ -136,14 +189,29 @@ export async function executeBridge(
   recipientAddress: string,
   onStatusChange: (status: BridgeStatus) => void
 ): Promise<void> {
+  // Pre-flight validation
+  if (fromChain.id === toChain.id) {
+    throw new Error("Source and destination chains must be different.");
+  }
+  if (!ethers.isAddress(recipientAddress)) {
+    throw new Error(`Invalid recipient address: ${recipientAddress}`);
+  }
+  const amountInUnits = validateAmount(amount);
+
+  // Verify wallet is on the source chain
+  const currentChainId = await getWalletChainId();
+  if (currentChainId !== fromChain.id) {
+    throw new Error(
+      `Wallet is on the wrong network. Please switch to ${fromChain.name} first.`
+    );
+  }
+
   const provider = await getProvider();
   const signer = await provider.getSigner();
   const signerAddress = await signer.getAddress();
 
-  const amountInUnits = ethers.parseUnits(amount, 6);
-
   // Step 1: Approve
-  onStatusChange({ step: "approving", message: "Approving USDC spend..." });
+  onStatusChange({ step: "approving", message: "Checking USDC allowance..." });
 
   const usdc = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
   const currentAllowance: bigint = await usdc.allowance(
@@ -158,7 +226,12 @@ export async function executeBridge(
       message: "Approval submitted, waiting for confirmation...",
       txHash: approveTx.hash,
     });
-    await approveTx.wait();
+    const approveReceipt = await approveTx.wait();
+    if (!approveReceipt) {
+      throw new Error("Approval transaction was not confirmed. Please try again.");
+    }
+  } else {
+    onStatusChange({ step: "approving", message: "Allowance already sufficient, skipping approval." });
   }
 
   // Step 2: Burn (depositForBurn)
@@ -185,6 +258,10 @@ export async function executeBridge(
   });
 
   const burnReceipt = await burnTx.wait();
+  if (!burnReceipt) {
+    throw new Error("Burn transaction was not confirmed. Please check the explorer and try again.");
+  }
+
   onStatusChange({
     step: "attesting",
     message: "Burn confirmed. Requesting attestation from Circle...",
@@ -192,23 +269,18 @@ export async function executeBridge(
   });
 
   // Step 3: Poll for attestation
-  let attestationResult: { message: string; attestation: string };
-  try {
-    attestationResult = await pollAttestation(
-      fromChain.cctpDomain,
-      burnReceipt.hash,
-      (msg) =>
-        onStatusChange({
-          step: "attesting",
-          message: msg,
-          burnTxHash: burnReceipt.hash,
-        })
-    );
-  } catch (err: unknown) {
-    throw new Error((err as Error).message);
-  }
+  const attestationResult = await pollAttestation(
+    fromChain.cctpDomain,
+    burnReceipt.hash,
+    (msg) =>
+      onStatusChange({
+        step: "attesting",
+        message: msg,
+        burnTxHash: burnReceipt.hash,
+      })
+  );
 
-  // Step 4: Mint on destination chain
+  // Step 4: Switch to destination chain and mint
   onStatusChange({
     step: "minting",
     message: `Switching to ${toChain.name} to mint USDC...`,
@@ -216,7 +288,7 @@ export async function executeBridge(
   });
 
   await switchToChain(toChain);
-  await new Promise((r) => setTimeout(r, 1000));
+  await waitForChainSwitch(toChain.id);
 
   const destProvider = await getProvider();
   const destSigner = await destProvider.getSigner();
@@ -246,6 +318,9 @@ export async function executeBridge(
   });
 
   const mintReceipt = await mintTx.wait();
+  if (!mintReceipt) {
+    throw new Error("Mint transaction was not confirmed. Your funds are safe — the attestation is still valid. Check the explorer and retry the mint.");
+  }
 
   onStatusChange({
     step: "done",

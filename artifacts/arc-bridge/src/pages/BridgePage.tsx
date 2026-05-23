@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { ArrowDownUp, Info, RefreshCw, ExternalLink } from "lucide-react";
 import { CHAINS, ChainConfig, getChainById } from "@/lib/chains";
 import {
   BridgeStatus,
+  ActiveStep,
   connectWallet,
   getWalletChainId,
   getUsdcBalance,
@@ -15,7 +16,11 @@ import { StepProgress } from "@/components/StepProgress";
 import { TxLink } from "@/components/TxLink";
 import { cn } from "@/lib/utils";
 
-const CHAIN_KEYS = Object.keys(CHAINS) as (keyof typeof CHAINS)[];
+/** Safely convert a balance string like "1.234567" or "—" to a display-ready value. */
+function safeParseBalance(balance: string): number | null {
+  const n = parseFloat(balance);
+  return isNaN(n) ? null : n;
+}
 
 export default function BridgePage() {
   const [fromChain, setFromChain] = useState<ChainConfig>(CHAINS.ETH_SEPOLIA);
@@ -34,6 +39,9 @@ export default function BridgePage() {
     step: "idle",
     message: "",
   });
+
+  // Tracks which step was active when an error occurred
+  const currentStepRef = useRef<ActiveStep | null>(null);
 
   function handleWalletConnect(addr: string, chainId: number) {
     setWalletAddress(addr);
@@ -57,7 +65,7 @@ export default function BridgePage() {
     refreshBalances();
   }, [refreshBalances]);
 
-  // Listen for chain/account changes
+  // Listen for chain/account changes from the wallet
   useEffect(() => {
     if (!window.ethereum) return;
     const handleChainChange = (chainIdHex: unknown) => {
@@ -67,11 +75,13 @@ export default function BridgePage() {
       const accs = accounts as string[];
       if (accs.length === 0) {
         setWalletAddress(null);
+        setWalletChainId(null);
       } else {
         setWalletAddress(accs[0]);
         setRecipient(accs[0]);
       }
     };
+    // Hydrate chain ID on mount if wallet is already connected
     window.ethereum.request({ method: "eth_chainId" }).then((id) => {
       setWalletChainId(parseInt(id as string, 16));
     });
@@ -90,7 +100,10 @@ export default function BridgePage() {
     setToBalance(fromBalance);
   }
 
-  const wrongNetwork = walletAddress && walletChainId !== null && walletChainId !== fromChain.id;
+  const wrongNetwork =
+    walletAddress !== null &&
+    walletChainId !== null &&
+    walletChainId !== fromChain.id;
 
   async function handleSwitchNetwork() {
     try {
@@ -98,25 +111,42 @@ export default function BridgePage() {
       const cid = await getWalletChainId();
       setWalletChainId(cid);
     } catch (e) {
-      console.error(e);
+      console.error("Failed to switch network:", e);
+    }
+  }
+
+  async function handleConnect() {
+    try {
+      const addr = await connectWallet();
+      const cid = await getWalletChainId();
+      handleWalletConnect(addr, cid);
+    } catch (e) {
+      // User rejected or wallet unavailable — silent
+      console.error("Wallet connect failed:", e);
     }
   }
 
   async function handleBridge() {
     if (!walletAddress) return;
     const effectiveRecipient = useCustomRecipient ? recipient : walletAddress;
-    if (!effectiveRecipient || !amount || parseFloat(amount) <= 0) return;
+    const parsedAmount = parseFloat(amount);
+    if (!amount || isNaN(parsedAmount) || parsedAmount <= 0) return;
 
-    if (wrongNetwork) {
-      await handleSwitchNetwork();
-      return;
-    }
-
+    currentStepRef.current = null;
     setBridgeStatus({ step: "approving", message: "Starting bridge..." });
 
     try {
       await executeBridge(fromChain, toChain, amount, effectiveRecipient, (status) => {
         setBridgeStatus(status);
+        // Track the last active step so we can highlight it on error
+        if (
+          status.step === "approving" ||
+          status.step === "burning" ||
+          status.step === "attesting" ||
+          status.step === "minting"
+        ) {
+          currentStepRef.current = status.step;
+        }
       });
       await refreshBalances();
     } catch (err: unknown) {
@@ -124,6 +154,7 @@ export default function BridgePage() {
         step: "error",
         message: "Bridge failed",
         error: (err as Error).message ?? "Unknown error",
+        failedAtStep: currentStepRef.current ?? undefined,
       });
     }
   }
@@ -131,6 +162,7 @@ export default function BridgePage() {
   function handleReset() {
     setBridgeStatus({ step: "idle", message: "" });
     setAmount("");
+    currentStepRef.current = null;
   }
 
   const isProcessing =
@@ -138,13 +170,26 @@ export default function BridgePage() {
     bridgeStatus.step !== "done" &&
     bridgeStatus.step !== "error";
 
+  const parsedAmount = parseFloat(amount);
+  const amountIsValid = amount !== "" && !isNaN(parsedAmount) && parsedAmount > 0;
+  const sameChain = fromChain.id === toChain.id;
+
   const canBridge =
-    walletAddress &&
-    amount &&
-    parseFloat(amount) > 0 &&
-    !isProcessing;
+    !!walletAddress &&
+    amountIsValid &&
+    !isProcessing &&
+    !wrongNetwork &&
+    !sameChain;
 
   const walletChain = walletChainId ? getChainById(walletChainId) : null;
+
+  const fromBalanceNum = safeParseBalance(fromBalance);
+
+  function applyMaxBalance() {
+    if (fromBalanceNum !== null) {
+      setAmount(fromBalanceNum.toFixed(6));
+    }
+  }
 
   return (
     <div className="min-h-screen bg-[#0C1220] flex flex-col">
@@ -197,8 +242,8 @@ export default function BridgePage() {
                 <h2 className="text-white font-bold text-lg">Bridge USDC</h2>
                 <button
                   onClick={refreshBalances}
-                  disabled={loadingBalances}
-                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition-all"
+                  disabled={loadingBalances || !walletAddress}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
                   title="Refresh balances"
                 >
                   <RefreshCw className={cn("w-4 h-4", loadingBalances && "animate-spin")} />
@@ -217,7 +262,7 @@ export default function BridgePage() {
                   <div className="flex items-start gap-2">
                     <Info className="w-4 h-4 text-amber-400 mt-0.5 flex-shrink-0" />
                     <p className="text-amber-300 text-xs">
-                      Your wallet is on{" "}
+                      Wallet is on{" "}
                       <span className="font-semibold">{walletChain?.name ?? `chain ${walletChainId}`}</span>.
                       Switch to <span className="font-semibold">{fromChain.name}</span> to proceed.
                     </p>
@@ -228,6 +273,16 @@ export default function BridgePage() {
                   >
                     Switch
                   </button>
+                </div>
+              )}
+
+              {/* Same-chain warning */}
+              {sameChain && (
+                <div className="flex items-center gap-2 px-4 py-3 bg-red-500/10 border border-red-500/30 rounded-xl">
+                  <Info className="w-4 h-4 text-red-400 flex-shrink-0" />
+                  <p className="text-red-300 text-xs">
+                    Source and destination chains must be different.
+                  </p>
                 </div>
               )}
 
@@ -244,8 +299,9 @@ export default function BridgePage() {
                   <div className="flex items-center justify-between px-1">
                     <span className="text-xs text-slate-500">Balance</span>
                     <button
-                      onClick={() => setAmount(parseFloat(fromBalance).toFixed(6))}
-                      className="text-xs text-[#4F9CF9] hover:text-[#7BB8FB] font-mono transition-colors"
+                      onClick={applyMaxBalance}
+                      disabled={fromBalanceNum === null || isProcessing}
+                      className="text-xs text-[#4F9CF9] hover:text-[#7BB8FB] font-mono transition-colors disabled:text-slate-500 disabled:cursor-default"
                     >
                       {fromBalance} USDC
                     </button>
@@ -254,37 +310,36 @@ export default function BridgePage() {
               </div>
 
               {/* Amount input */}
-              <div className="space-y-1">
-                <div className="relative">
-                  <input
-                    type="number"
-                    value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
-                    placeholder="0.00"
-                    min="0"
-                    step="0.01"
-                    disabled={isProcessing}
-                    className={cn(
-                      "w-full px-4 py-3.5 pr-20 rounded-xl text-white text-xl font-semibold",
-                      "bg-slate-800/80 border border-slate-700/60 focus:border-[#4F9CF9]/60 focus:outline-none",
-                      "placeholder:text-slate-600 transition-colors",
-                      "disabled:opacity-50"
-                    )}
-                  />
-                  <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                    <button
-                      onClick={() => setAmount(parseFloat(fromBalance).toFixed(6))}
-                      disabled={!walletAddress || isProcessing}
-                      className="text-xs font-semibold text-[#4F9CF9] hover:text-[#7BB8FB] disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
-                    >
-                      MAX
-                    </button>
-                    <span className="text-slate-400 text-sm font-medium">USDC</span>
-                  </div>
+              <div className="relative">
+                <input
+                  type="number"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  placeholder="0.00"
+                  min="0"
+                  step="0.01"
+                  disabled={isProcessing}
+                  className={cn(
+                    "w-full px-4 py-3.5 pr-20 rounded-xl text-white text-xl font-semibold",
+                    "bg-slate-800/80 border border-slate-700/60 focus:border-[#4F9CF9]/60 focus:outline-none",
+                    "placeholder:text-slate-600 transition-colors",
+                    "disabled:opacity-50",
+                    "[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                  )}
+                />
+                <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                  <button
+                    onClick={applyMaxBalance}
+                    disabled={fromBalanceNum === null || !walletAddress || isProcessing}
+                    className="text-xs font-semibold text-[#4F9CF9] hover:text-[#7BB8FB] disabled:text-slate-600 disabled:cursor-not-allowed transition-colors"
+                  >
+                    MAX
+                  </button>
+                  <span className="text-slate-400 text-sm font-medium">USDC</span>
                 </div>
               </div>
 
-              {/* Swap button */}
+              {/* Swap chains button */}
               <div className="flex justify-center -my-1">
                 <button
                   onClick={swapChains}
@@ -294,6 +349,7 @@ export default function BridgePage() {
                     "hover:border-[#4F9CF9]/40 hover:text-[#4F9CF9] hover:bg-slate-700 transition-all",
                     "disabled:opacity-40 disabled:cursor-not-allowed"
                   )}
+                  title="Swap source and destination"
                 >
                   <ArrowDownUp className="w-4 h-4" />
                 </button>
@@ -321,7 +377,7 @@ export default function BridgePage() {
                 <button
                   onClick={() => setUseCustomRecipient(!useCustomRecipient)}
                   disabled={isProcessing}
-                  className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                  className="text-xs text-slate-500 hover:text-slate-300 transition-colors disabled:cursor-not-allowed"
                 >
                   {useCustomRecipient ? "▼" : "▶"} Send to different address
                 </button>
@@ -330,7 +386,7 @@ export default function BridgePage() {
                     type="text"
                     value={recipient}
                     onChange={(e) => setRecipient(e.target.value)}
-                    placeholder="0x... recipient address on destination"
+                    placeholder="0x… recipient address on destination chain"
                     disabled={isProcessing}
                     className={cn(
                       "mt-2 w-full px-3 py-2.5 rounded-xl text-sm font-mono text-white",
@@ -341,8 +397,8 @@ export default function BridgePage() {
                 )}
               </div>
 
-              {/* Bridge info row */}
-              {amount && parseFloat(amount) > 0 && (
+              {/* Bridge summary */}
+              {amountIsValid && !sameChain && (
                 <div className="px-4 py-3 bg-slate-800/40 rounded-xl border border-slate-700/40 space-y-1.5">
                   <div className="flex justify-between text-xs">
                     <span className="text-slate-500">You send</span>
@@ -366,14 +422,19 @@ export default function BridgePage() {
               {/* Status / Progress */}
               {bridgeStatus.step !== "idle" && (
                 <div className="space-y-4 px-4 py-4 bg-slate-800/30 rounded-xl border border-slate-700/40">
-                  <StepProgress step={bridgeStatus.step} />
+                  <StepProgress
+                    step={bridgeStatus.step}
+                    failedAtStep={bridgeStatus.failedAtStep}
+                  />
 
                   <p
                     className={cn(
-                      "text-xs text-center",
+                      "text-xs text-center leading-relaxed",
                       bridgeStatus.step === "done" && "text-emerald-400 font-medium",
                       bridgeStatus.step === "error" && "text-red-400",
-                      bridgeStatus.step !== "done" && bridgeStatus.step !== "error" && "text-slate-400"
+                      bridgeStatus.step !== "done" &&
+                        bridgeStatus.step !== "error" &&
+                        "text-slate-400"
                     )}
                   >
                     {bridgeStatus.error ?? bridgeStatus.message}
@@ -407,15 +468,11 @@ export default function BridgePage() {
               )}
 
               {/* Main CTA */}
-              {(bridgeStatus.step === "idle") && (
+              {bridgeStatus.step === "idle" && (
                 <>
                   {!walletAddress ? (
                     <button
-                      onClick={async () => {
-                        const addr = await connectWallet();
-                        const cid = await getWalletChainId();
-                        handleWalletConnect(addr, cid);
-                      }}
+                      onClick={handleConnect}
                       className="w-full py-3.5 rounded-xl font-semibold text-sm bg-[#4F9CF9] hover:bg-[#3B8AE8] text-white transition-all duration-150"
                     >
                       Connect Wallet
@@ -438,7 +495,9 @@ export default function BridgePage() {
                           : "bg-slate-700 text-slate-500 cursor-not-allowed"
                       )}
                     >
-                      {!amount || parseFloat(amount) <= 0
+                      {sameChain
+                        ? "Select different chains"
+                        : !amountIsValid
                         ? "Enter an amount"
                         : "Bridge USDC"}
                     </button>
