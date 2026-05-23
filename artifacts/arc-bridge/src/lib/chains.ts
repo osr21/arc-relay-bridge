@@ -45,6 +45,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    cctpVersion: 2,
     logoColor: "#627EEA",
   },
   BASE_SEPOLIA: {
@@ -59,6 +60,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    cctpVersion: 2,
     logoColor: "#0052FF",
   },
   AVAX_FUJI: {
@@ -73,6 +75,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "AVAX", symbol: "AVAX", decimals: 18 },
+    cctpVersion: 2,
     logoColor: "#E84142",
   },
 };
