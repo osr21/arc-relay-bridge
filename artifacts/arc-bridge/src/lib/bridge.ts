@@ -177,27 +177,68 @@ type AttestationMessage = {
   eventNonce?: string;
 };
 
+type FetchResult =
+  | { ok: true;  messages: AttestationMessage[] }
+  | { ok: false; diagnostic: string };
+
 async function fetchAttestation(
   sourceDomain: number,
   burnTxHash: string
-): Promise<AttestationMessage[] | null> {
-  // Try v2 first, then fall back to v1 — some chains/environments use different versions
-  const endpoints = [
-    `${ATTESTATION_API}/v2/messages/${sourceDomain}?transactionHash=${burnTxHash}`,
-    `${ATTESTATION_API}/v1/messages/${sourceDomain}/${burnTxHash}`,
+): Promise<FetchResult> {
+  // Use the server-side proxy to avoid CORS restrictions.
+  // Falls back to direct browser calls if the proxy is unreachable.
+  const proxyUrl = `/api/attest?domain=${sourceDomain}&txHash=${burnTxHash}`;
+
+  try {
+    const res = await fetch(proxyUrl);
+    if (res.ok) {
+      const data = await res.json() as { messages: AttestationMessage[]; diagnostic: string };
+      if (data.messages.length > 0) return { ok: true, messages: data.messages };
+      if (data.diagnostic) return { ok: false, diagnostic: `proxy → ${data.diagnostic}` };
+      // 200 but empty — tx not indexed yet
+      return { ok: false, diagnostic: "proxy: 200 (no messages yet)" };
+    }
+  } catch {
+    // Proxy unreachable — fall through to direct browser calls
+  }
+
+  // Direct browser fallback (may hit CORS on some hosts)
+  const endpoints: Array<{ label: string; url: string }> = [
+    { label: "v2", url: `${ATTESTATION_API}/v2/messages/${sourceDomain}?transactionHash=${burnTxHash}` },
+    { label: "v1", url: `${ATTESTATION_API}/v1/messages/${sourceDomain}/${burnTxHash}` },
   ];
-  for (const url of endpoints) {
+  const errors: string[] = ["proxy: unreachable"];
+
+  for (const { label, url } of endpoints) {
     try {
       const res = await fetch(url);
-      if (!res.ok) continue;
-      const data = await res.json();
-      const msgs: AttestationMessage[] = data?.messages ?? [];
-      if (msgs.length > 0) return msgs;
-    } catch {
-      // try next endpoint
+      let body = "";
+      try { body = await res.text(); } catch { /* ignore */ }
+
+      if (!res.ok) {
+        let detail = `${res.status}`;
+        try {
+          const parsed = JSON.parse(body);
+          const msg = parsed?.error ?? parsed?.message ?? parsed?.detail;
+          if (msg) detail += ` — ${String(msg).slice(0, 80)}`;
+        } catch { /* body not JSON */ }
+        errors.push(`${label}: ${detail}`);
+        continue;
+      }
+
+      let data: Record<string, unknown> = {};
+      try { data = JSON.parse(body); } catch { errors.push(`${label}: invalid JSON`); continue; }
+
+      const msgs: AttestationMessage[] = (data?.messages as AttestationMessage[]) ?? [];
+      if (msgs.length > 0) return { ok: true, messages: msgs };
+      errors.push(`${label}: 200 (no messages)`);
+    } catch (e) {
+      const detail = e instanceof TypeError ? "network/CORS error" : String(e).slice(0, 60);
+      errors.push(`${label}: ${detail}`);
     }
   }
-  return null;
+
+  return { ok: false, diagnostic: errors.join(" | ") };
 }
 
 async function pollAttestation(
@@ -210,29 +251,28 @@ async function pollAttestation(
   // 240 attempts × 5 s = 20 minutes total
   for (let i = 0; i < 240; i++) {
     await new Promise((r) => setTimeout(r, 5000));
-    try {
-      const messages = await fetchAttestation(sourceDomain, burnTxHash);
 
-      if (!messages) {
-        onProgress(`Waiting for attestation... (${i + 1}/240, no response yet)`);
-        continue;
-      }
+    const result = await fetchAttestation(sourceDomain, burnTxHash);
+    const attempt = `${i + 1}/240`;
+    const elapsed = Math.floor(((i + 1) * 5) / 60);
+    const elapsedStr = elapsed > 0 ? ` · ${elapsed}m` : "";
 
-      const complete = messages.find(
-        (m) => m.attestation && m.attestation !== "PENDING" && m.message
-      );
-      if (complete?.attestation && complete?.message) {
-        return { message: complete.message, attestation: complete.attestation };
-      }
-
-      // Show the actual status returned so the user can see progress
-      const status = messages[0]?.status ?? messages[0]?.attestation ?? "pending";
-      const elapsed = Math.floor(((i + 1) * 5) / 60);
-      const elapsedStr = elapsed > 0 ? ` · ${elapsed}m elapsed` : "";
-      onProgress(`Attestation status: ${status}${elapsedStr} (${i + 1}/240)`);
-    } catch {
-      onProgress(`Polling error, retrying... (${i + 1}/240)`);
+    if (!result.ok) {
+      onProgress(`Waiting for attestation… (${attempt}${elapsedStr}) — ${result.diagnostic}`);
+      continue;
     }
+
+    const { messages } = result;
+    const complete = messages.find(
+      (m) => m.attestation && m.attestation !== "PENDING" && m.message
+    );
+    if (complete?.attestation && complete?.message) {
+      return { message: complete.message, attestation: complete.attestation };
+    }
+
+    // API responded but attestation is still pending
+    const status = messages[0]?.status ?? messages[0]?.attestation ?? "pending";
+    onProgress(`Attestation ${status}${elapsedStr} (${attempt})`);
   }
 
   throw new Error(
