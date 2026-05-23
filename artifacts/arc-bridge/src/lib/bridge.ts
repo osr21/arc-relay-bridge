@@ -466,11 +466,17 @@ async function burnViaFeeRouter(
 
   const feeRouter = new ethers.Contract(feeRouterAddress, FEE_ROUTER_ABI, signer);
   // FeeRouter v2: usdc and tokenMessenger are immutable — 4 params.
+  // On chains where eth_estimateGas is broken (e.g. Arc Testnet returns data=null),
+  // supply a hard-coded gasLimit to skip the estimateGas call entirely.
+  const feeRouterOverrides = fromChain.gasLimitOverride
+    ? { gasLimit: fromChain.gasLimitOverride }
+    : {};
   const bridgeTx  = await feeRouter.bridge(
     grossAmountInUnits,
     toChain.cctpDomain,
     mintRecipient32,
-    fromChain.minFinalityThreshold ?? 1000
+    fromChain.minFinalityThreshold ?? 1000,
+    feeRouterOverrides
   );
 
   onStatusChange({
@@ -549,7 +555,11 @@ async function burnWithManualFee(
   //   destinationCaller = bytes32(0) → anyone may relay
   //   maxFee            = 0          → no premium for fast finality
   //   minFinalityThreshold = 2000    → finalized (matches on-chain default)
+  // On chains where eth_estimateGas is broken (e.g. Arc Testnet), bypass it with a hard-coded gasLimit.
   const finalityThreshold = fromChain.minFinalityThreshold ?? 1000;
+  const depositOverrides = fromChain.gasLimitOverride
+    ? { gasLimit: fromChain.gasLimitOverride }
+    : {};
   const burnTx = isV2
     ? await tokenMessenger.depositForBurn(
         fee.bridgeAmount,
@@ -558,13 +568,15 @@ async function burnWithManualFee(
         fromChain.usdcAddress,
         ethers.ZeroHash,     // destinationCaller = 0 (anyone)
         0n,                  // maxFee = 0
-        finalityThreshold    // per-chain: Arc=2000 (finalized), others=1000 (safe)
+        finalityThreshold,   // per-chain: Arc=2000 (finalized), others=1000 (safe)
+        depositOverrides
       )
     : await tokenMessenger.depositForBurn(
         fee.bridgeAmount,
         toChain.cctpDomain,
         mintRecipient32,
-        fromChain.usdcAddress
+        fromChain.usdcAddress,
+        depositOverrides
       );
 
   onStatusChange({

@@ -20,6 +20,12 @@ export interface ChainConfig {
    * Defaults to 1000 if unset.
    */
   minFinalityThreshold?: number;
+  /**
+   * Hard-coded gas limit override for chains whose eth_estimateGas endpoint
+   * is unreliable (e.g. Arc Testnet returns data=null for complex calls).
+   * When set, ethers.js skips estimateGas and uses this value directly.
+   */
+  gasLimitOverride?: bigint;
   logoColor: string;
 }
 
@@ -42,6 +48,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     isArc: true,
     cctpVersion: 2,
     minFinalityThreshold: 2000,
+    gasLimitOverride: 600000n,
     logoColor: "#354457",
   },
   ETH_SEPOLIA: {
