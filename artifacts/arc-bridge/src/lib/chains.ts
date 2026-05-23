@@ -24,7 +24,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     explorerUrl: "https://explorer.testnet.arc.network",
     cctpDomain: 7,
     usdcAddress: "0x3600000000000000000000000000000000000000",
-    tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAD",
+    tokenMessenger: "0x8FE6b999dC680CCfDD5bF7Eb0974218be2542dAd",
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
     isArc: true,
