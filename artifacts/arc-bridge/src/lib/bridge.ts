@@ -175,14 +175,13 @@ function validateAmount(amount: string): bigint {
 // Parsing it from the receipt gives us the raw message bytes we need for receiveMessage,
 // and lets us compute the message hash to query Circle's /v1/attestations/ endpoint.
 
-const MSG_SENT_IFACE = new ethers.Interface(["event MessageSent(bytes message)"]);
+const MSG_SENT_IFACE  = new ethers.Interface(["event MessageSent(bytes message)"]);
+// topic0 = keccak256("MessageSent(bytes)") — matches the event regardless of which contract emits it
+const MSG_SENT_TOPIC  = MSG_SENT_IFACE.getEvent("MessageSent")!.topicHash;
 
-function parseMessageSent(
-  receipt: ethers.TransactionReceipt,
-  messageTransmitterAddress: string
-): string | undefined {
+function parseMessageSent(receipt: ethers.TransactionReceipt): string | undefined {
   for (const log of receipt.logs) {
-    if (log.address.toLowerCase() !== messageTransmitterAddress.toLowerCase()) continue;
+    if (log.topics[0] !== MSG_SENT_TOPIC) continue;
     try {
       const parsed = MSG_SENT_IFACE.parseLog(log);
       if (parsed?.name === "MessageSent") {
@@ -409,7 +408,7 @@ async function burnViaFeeRouter(
     throw new Error("Bridge transaction was not confirmed. Please check the explorer and try again.");
   }
 
-  const messageBytes = parseMessageSent(bridgeReceipt, fromChain.messageTransmitter);
+  const messageBytes = parseMessageSent(bridgeReceipt);
   return { burnTxHash: bridgeReceipt.hash, messageBytes };
 }
 
@@ -486,7 +485,7 @@ async function burnWithManualFee(
     throw new Error("Burn transaction was not confirmed. Please check the explorer and try again.");
   }
 
-  const messageBytes = parseMessageSent(burnReceipt, fromChain.messageTransmitter);
+  const messageBytes = parseMessageSent(burnReceipt);
   return { burnTxHash: burnReceipt.hash, feeTxHash, messageBytes };
 }
 
