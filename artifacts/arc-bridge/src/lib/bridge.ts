@@ -308,40 +308,37 @@ async function pollAttestation(
     const elapsed = Math.floor(((i + 1) * 5) / 60);
     const elapsedStr = elapsed > 0 ? ` · ${elapsed}m` : "";
 
-    // ── Primary: message-hash endpoint (works regardless of source chain) ──
+    // ── Path 1: message-hash endpoint (/v1/attestations/{hash}) ────────────
+    // Returns a signed attestation once Circle has confirmed the message.
+    // While Circle is still waiting for finality it returns 404 — that is
+    // normal "pending" behaviour, NOT an error.
     if (messageHash && messageBytes) {
       const hashResult = await fetchAttestationByHash(messageHash);
       if (hashResult.ok) {
         return { message: messageBytes, attestation: hashResult.attestation };
       }
-      // Show the hash-based status unless it's just "pending" (too noisy)
-      const diag = hashResult.diagnostic;
-      const isJustPending = diag.startsWith("hash: pending") || diag.startsWith("hash: PENDING");
-      if (!isJustPending) {
-        onProgress(`Waiting for attestation… (${attempt}${elapsedStr}) — ${diag}`);
-      } else {
-        onProgress(`Waiting for attestation… (${attempt}${elapsedStr})`);
+    }
+
+    // ── Path 2: tx-hash endpoint (/v2/messages/{domain}?transactionHash=) ──
+    // Also tried every round.  For Arc Testnet this endpoint works and returns
+    // "pending_confirmations" while Circle is waiting for block finality, then
+    // "complete" with the message + attestation once ready.
+    const txResult = await fetchAttestation(sourceDomain, burnTxHash);
+    if (txResult.ok) {
+      const complete = txResult.messages.find(
+        (m) => m.attestation && m.attestation !== "PENDING" && m.message
+      );
+      if (complete?.attestation && complete?.message) {
+        return { message: complete.message, attestation: complete.attestation };
       }
+      // Tx-hash path found the message but not yet attested — show status
+      const status = txResult.messages[0]?.status ?? txResult.messages[0]?.attestation ?? "pending_confirmations";
+      onProgress(`Waiting for attestation… (${attempt}${elapsedStr}) — ${status}`);
       continue;
     }
 
-    // ── Fallback: tx-hash endpoint ──────────────────────────────────────────
-    const result = await fetchAttestation(sourceDomain, burnTxHash);
-    if (!result.ok) {
-      onProgress(`Waiting for attestation… (${attempt}${elapsedStr}) — ${result.diagnostic}`);
-      continue;
-    }
-
-    const { messages } = result;
-    const complete = messages.find(
-      (m) => m.attestation && m.attestation !== "PENDING" && m.message
-    );
-    if (complete?.attestation && complete?.message) {
-      return { message: complete.message, attestation: complete.attestation };
-    }
-
-    const status = messages[0]?.status ?? messages[0]?.attestation ?? "pending";
-    onProgress(`Attestation ${status}${elapsedStr} (${attempt})`);
+    // Both paths returned no result yet — show a quiet waiting message
+    onProgress(`Waiting for attestation… (${attempt}${elapsedStr})`);
   }
 
   throw new Error(
