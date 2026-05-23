@@ -56,6 +56,22 @@ export async function connectWallet(): Promise<string> {
   return (accounts as string[])[0];
 }
 
+/** Prompt MetaMask to add the chain's USDC token to the wallet token list. */
+export async function addUsdcToWallet(chain: ChainConfig): Promise<void> {
+  if (!window.ethereum) throw new Error("No wallet detected.");
+  await window.ethereum.request({
+    method: "wallet_watchAsset",
+    params: {
+      type: "ERC20",
+      options: {
+        address: chain.usdcAddress,
+        symbol: "USDC",
+        decimals: 6,
+      },
+    } as unknown as unknown[],
+  });
+}
+
 export async function getWalletChainId(): Promise<number> {
   if (!window.ethereum) throw new Error("No wallet detected.");
   const hexId = (await window.ethereum.request({ method: "eth_chainId" })) as string;

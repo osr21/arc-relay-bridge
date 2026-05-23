@@ -10,6 +10,7 @@ import {
   switchToChain,
   executeBridge,
   friendlyError,
+  addUsdcToWallet,
 } from "@/lib/bridge";
 import { calculateFee, formatUsdc, FEE_BPS, isFeeActive } from "@/lib/config";
 import { WalletButton } from "@/components/WalletButton";
@@ -466,6 +467,15 @@ export default function BridgePage() {
                       </div>
                     )}
                   </div>
+
+                  {bridgeStatus.step === "done" && (
+                    <button
+                      onClick={() => addUsdcToWallet(toChain).catch(() => {})}
+                      className="w-full py-2 text-xs font-semibold text-[#4F9CF9] hover:text-[#7BB8FB] border border-[#4F9CF9]/30 hover:border-[#4F9CF9]/60 rounded-xl transition-all"
+                    >
+                      Add USDC to wallet on {toChain.shortName}
+                    </button>
+                  )}
 
                   {(bridgeStatus.step === "done" || bridgeStatus.step === "error") && (
                     <button onClick={handleReset}
