@@ -142,29 +142,76 @@ function validateAmount(amount: string): bigint {
   return parsed;
 }
 
+type AttestationMessage = {
+  attestation?: string;
+  message?: string;
+  status?: string;
+  eventNonce?: string;
+};
+
+async function fetchAttestation(
+  sourceDomain: number,
+  burnTxHash: string
+): Promise<AttestationMessage[] | null> {
+  // Try v2 first, then fall back to v1 — some chains/environments use different versions
+  const endpoints = [
+    `${ATTESTATION_API}/v2/messages/${sourceDomain}?transactionHash=${burnTxHash}`,
+    `${ATTESTATION_API}/v1/messages/${sourceDomain}/${burnTxHash}`,
+  ];
+  for (const url of endpoints) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const msgs: AttestationMessage[] = data?.messages ?? [];
+      if (msgs.length > 0) return msgs;
+    } catch {
+      // try next endpoint
+    }
+  }
+  return null;
+}
+
 async function pollAttestation(
   sourceDomain: number,
   burnTxHash: string,
   onProgress: (msg: string) => void
 ): Promise<{ message: string; attestation: string }> {
-  const url = `${ATTESTATION_API}/v2/messages/${sourceDomain}?transactionHash=${burnTxHash}`;
-  onProgress("Waiting for Circle attestation (this may take 1–3 minutes)...");
+  onProgress("Waiting for Circle attestation (this can take a few minutes on testnet)...");
 
-  for (let i = 0; i < 120; i++) {
+  // 240 attempts × 5 s = 20 minutes total
+  for (let i = 0; i < 240; i++) {
     await new Promise((r) => setTimeout(r, 5000));
     try {
-      const res = await fetch(url);
-      if (!res.ok) { onProgress(`Polling attestation... (attempt ${i + 1}/120)`); continue; }
-      const data     = await res.json();
-      const messages: Array<{ attestation?: string; message?: string }> = data?.messages ?? [];
-      const found    = messages.find((m) => m.attestation && m.attestation !== "PENDING" && m.message);
-      if (found?.attestation && found?.message) return { message: found.message, attestation: found.attestation };
-      onProgress(`Waiting for attestation... (attempt ${i + 1}/120)`);
+      const messages = await fetchAttestation(sourceDomain, burnTxHash);
+
+      if (!messages) {
+        onProgress(`Waiting for attestation... (${i + 1}/240, no response yet)`);
+        continue;
+      }
+
+      const complete = messages.find(
+        (m) => m.attestation && m.attestation !== "PENDING" && m.message
+      );
+      if (complete?.attestation && complete?.message) {
+        return { message: complete.message, attestation: complete.attestation };
+      }
+
+      // Show the actual status returned so the user can see progress
+      const status = messages[0]?.status ?? messages[0]?.attestation ?? "pending";
+      const elapsed = Math.floor(((i + 1) * 5) / 60);
+      const elapsedStr = elapsed > 0 ? ` · ${elapsed}m elapsed` : "";
+      onProgress(`Attestation status: ${status}${elapsedStr} (${i + 1}/240)`);
     } catch {
-      onProgress(`Polling error, retrying... (attempt ${i + 1}/120)`);
+      onProgress(`Polling error, retrying... (${i + 1}/240)`);
     }
   }
-  throw new Error("Attestation timed out after 10 minutes.");
+
+  throw new Error(
+    `Attestation timed out after 20 minutes. Your funds are safe — the burn is confirmed.\n` +
+    `Burn tx: ${burnTxHash}\n` +
+    `You can manually complete the mint later using the CCTP relayer at https://developers.circle.com/stablecoins/cctp-getting-started`
+  );
 }
 
 // ── Smart-contract path: single FeeRouter.bridge() call ───────────────────

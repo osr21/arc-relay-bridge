@@ -406,14 +406,33 @@ export default function BridgePage() {
                     hasFee={feeEnabled}
                   />
 
-                  <p className={cn(
-                    "text-xs text-center leading-relaxed",
-                    bridgeStatus.step === "done"  && "text-emerald-400 font-medium",
-                    bridgeStatus.step === "error" && "text-red-400",
-                    bridgeStatus.step !== "done" && bridgeStatus.step !== "error" && "text-slate-400"
-                  )}>
-                    {bridgeStatus.error ?? bridgeStatus.message}
-                  </p>
+                  {/* Status message — special layout for attestation timeout */}
+                  {bridgeStatus.step === "error" && bridgeStatus.error?.startsWith("Attestation timed out") ? (
+                    <div className="space-y-2">
+                      <p className="text-xs text-red-400 text-center font-medium">
+                        Attestation timed out — but your funds are safe.
+                      </p>
+                      <p className="text-xs text-slate-400 text-center leading-relaxed">
+                        The burn is confirmed on-chain. Circle will eventually produce the attestation.
+                        You can retry the mint step manually once it appears using the burn tx below.
+                      </p>
+                      {bridgeStatus.burnTxHash && (
+                        <div className="flex items-center justify-between px-3 py-2 bg-slate-800/60 rounded-lg border border-slate-700/50">
+                          <span className="text-xs text-slate-500">Burn tx (save this)</span>
+                          <TxLink hash={bridgeStatus.burnTxHash} chain={fromChain} />
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className={cn(
+                      "text-xs text-center leading-relaxed",
+                      bridgeStatus.step === "done"  && "text-emerald-400 font-medium",
+                      bridgeStatus.step === "error" && "text-red-400",
+                      bridgeStatus.step !== "done" && bridgeStatus.step !== "error" && "text-slate-400"
+                    )}>
+                      {bridgeStatus.error ?? bridgeStatus.message}
+                    </p>
+                  )}
 
                   {/* TX links */}
                   <div className="flex flex-col gap-1.5">
