@@ -55,16 +55,16 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 - Base Sepolia USDC: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - Fuji USDC: `0x5425890298aed601595a70AB815c96711a31Bc65`
 
-## FeeRouter v3 Addresses (deployed 2025-05-23)
+## FeeRouter v3.1 Addresses (deployed 2025-05-23)
 
-Upgrades over v2: two-step ownership transfer, slippage guard on bridge(), residual approval reset after depositForBurn, emergency pause/unpause.
+Upgrades over v2: two-step ownership transfer, slippage guard on bridge(), residual approval reset after depositForBurn (best-effort try/catch for Arc USDC compatibility), emergency pause/unpause.
 
 | Chain | Address |
 |---|---|
-| Arc Testnet | `0x4046585F4704268A0c2b6AF5ca0B99260682Bdda` |
-| Ethereum Sepolia | `0x61d80f2cf7A6a957FEAD4633FaF2d769294d539e` |
-| Base Sepolia | `0xf7082fB6Bdcfdd412984A047bdd22C8cebeb4090` |
-| Avalanche Fuji | `0xAc6F84B255910D95efC4E90D6f1dd5A3e7FCe7e2` |
+| Arc Testnet | `0x1ac67B91B8700Bdc0C350B716c874c8842441153` |
+| Ethereum Sepolia | `0xfA3A63435adB0235b0501297551B7efAF54a1F1a` |
+| Base Sepolia | `0x4438eBA2FcdD45bA3668f495f602C058e8826df6` |
+| Avalanche Fuji | `0xF44E8aF0f2a57853d2490096a11a187482b1A5cF` |
 
 Fee recipient: `0xdb5019b8DfbccEF8906C39B16a4870082eAbBc4C`
 Re-deploy: `pnpm --filter @workspace/scripts run deploy`

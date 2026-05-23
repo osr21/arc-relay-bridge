@@ -186,9 +186,11 @@ contract FeeRouter {
             minFinalityThreshold
         );
 
-        // Reset residual allowance — CCTP should consume exactly bridgeAmount,
-        // but zeroing out is a defensive best practice after any external approval.
-        IERC20(usdc).approve(tokenMessenger, 0);
+        // Best-effort: reset residual allowance to zero after the burn.
+        // CCTP should consume exactly bridgeAmount, so this is normally a no-op.
+        // Wrapped in try/catch because non-standard ERC-20 implementations (e.g.
+        // Arc Testnet's system USDC at 0x3600…0000) may revert on approve(0).
+        try IERC20(usdc).approve(tokenMessenger, 0) returns (bool) {} catch {}
 
         emit BridgeInitiated(
             msg.sender,
