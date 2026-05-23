@@ -38,9 +38,13 @@ export const FEE_ROUTER_ABI = [
 /**
  * Deployed FeeRouter v2 addresses per chain ID.
  * Deployed 2025-05-23 (v2 hardened).
+ *
+ * Arc Testnet is intentionally excluded: its USDC lives at a special system
+ * address (0x3600...) that may reject contract-to-contract calls such as the
+ * approve() Arc's FeeRouter.bridge() issues internally.  Arc burns use the
+ * direct CCTP path (burnWithManualFee) so the user's EOA makes all calls.
  */
 export const FEE_ROUTER_ADDRESSES: Record<number, string> = {
-  5042002:  "0x8256a1e1f8971448b49dA0F55b8A1BB6557eA8FC", // Arc Testnet
   11155111: "0x5B1F511ed4dF76f369671BF1c4aCF0dD84CC0804", // Ethereum Sepolia
   84532:    "0x8d4B57eD464df10414Dde3ADC2E403a01ebc50d8", // Base Sepolia
   43113:    "0x64D160b7E91e78e52dFc0e8829640E32A919164C", // Avalanche Fuji

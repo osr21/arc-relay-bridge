@@ -512,9 +512,14 @@ async function burnWithManualFee(
   // ── Step 1: Approve TokenMessenger for bridge amount only ──────────────
   onStatusChange({ step: "approving", message: "Checking USDC allowance..." });
 
+  // On chains where eth_estimateGas is unreliable (e.g. Arc Testnet), bypass it.
+  const writeOverrides = fromChain.gasLimitOverride
+    ? { gasLimit: fromChain.gasLimitOverride }
+    : {};
+
   const allowance: bigint = await usdc.allowance(signerAddress, fromChain.tokenMessenger);
   if (allowance < fee.bridgeAmount) {
-    const approveTx = await usdc.approve(fromChain.tokenMessenger, fee.bridgeAmount);
+    const approveTx = await usdc.approve(fromChain.tokenMessenger, fee.bridgeAmount, writeOverrides);
     onStatusChange({
       step: "approving",
       message: "Approval submitted, waiting for confirmation...",
@@ -533,7 +538,7 @@ async function burnWithManualFee(
       step: "collecting",
       message: `Collecting protocol fee (${fee.feeBps / 100}%)...`,
     });
-    const feeTx = await usdc.transfer(fee.feeRecipient, fee.feeAmount);
+    const feeTx = await usdc.transfer(fee.feeRecipient, fee.feeAmount, writeOverrides);
     onStatusChange({
       step: "collecting",
       message: `Fee of ${formatUsdc(fee.feeAmount)} USDC submitted...`,
