@@ -48,6 +48,7 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 ## Gotchas
 
 - Arc Testnet USDC: `0x3600000000000000000000000000000000000000` (special system address)
+- Arc Testnet TokenMessenger: `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` — same address as all other chains (an earlier `...dAd` variant had no code deployed)
 - Arc native USDC uses 18 decimals for gas, but the ERC-20 interface uses 6 decimals — always use ERC-20 interface
 - Attestation can take 1–3 minutes on testnet; the UI polls every 5 seconds for up to 10 minutes
 - Always verify contract addresses against https://docs.arc.io/arc/references/contract-addresses
