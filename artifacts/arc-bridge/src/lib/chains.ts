@@ -13,6 +13,12 @@ export interface ChainConfig {
   isArc?: boolean;
   /** CCTP version used by this chain's TokenMessenger (1 = V1 4-param, 2 = V2 7-param) */
   cctpVersion?: 1 | 2;
+  /**
+   * CCTP V2 minFinalityThreshold passed to depositForBurn.
+   * 2000 = fully finalized (slow on ETH ~12 min), 1000 = safe (~1-2 min), 0 = fast.
+   * Defaults to 1000 if unset.
+   */
+  minFinalityThreshold?: number;
   logoColor: string;
 }
 
@@ -31,6 +37,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
     isArc: true,
     cctpVersion: 2,
+    minFinalityThreshold: 2000,
     logoColor: "#354457",
   },
   ETH_SEPOLIA: {
@@ -46,6 +53,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     cctpVersion: 2,
+    minFinalityThreshold: 1000,
     logoColor: "#627EEA",
   },
   BASE_SEPOLIA: {
@@ -61,6 +69,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     cctpVersion: 2,
+    minFinalityThreshold: 1000,
     logoColor: "#0052FF",
   },
   AVAX_FUJI: {
@@ -76,6 +85,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "AVAX", symbol: "AVAX", decimals: 18 },
     cctpVersion: 2,
+    minFinalityThreshold: 1000,
     logoColor: "#E84142",
   },
 };

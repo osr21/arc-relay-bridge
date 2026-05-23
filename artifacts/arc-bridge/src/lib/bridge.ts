@@ -487,15 +487,16 @@ async function burnWithManualFee(
   //   destinationCaller = bytes32(0) → anyone may relay
   //   maxFee            = 0          → no premium for fast finality
   //   minFinalityThreshold = 2000    → finalized (matches on-chain default)
+  const finalityThreshold = fromChain.minFinalityThreshold ?? 1000;
   const burnTx = isV2
     ? await tokenMessenger.depositForBurn(
         fee.bridgeAmount,
         toChain.cctpDomain,
         mintRecipient32,
         fromChain.usdcAddress,
-        ethers.ZeroHash,  // destinationCaller = 0 (anyone)
-        0n,               // maxFee = 0
-        2000              // minFinalityThreshold
+        ethers.ZeroHash,     // destinationCaller = 0 (anyone)
+        0n,                  // maxFee = 0
+        finalityThreshold    // per-chain: Arc=2000 (finalized), others=1000 (safe)
       )
     : await tokenMessenger.depositForBurn(
         fee.bridgeAmount,
