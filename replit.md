@@ -55,6 +55,18 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 - Base Sepolia USDC: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - Fuji USDC: `0x5425890298aed601595a70AB815c96711a31Bc65`
 
+## FeeRouter Addresses (deployed 2025-05-23, CCTP V2, 0.3% fee)
+
+| Chain | Address |
+|---|---|
+| Arc Testnet | `0x8250A0E5626CCaA9680e35BD5c231BA3Ed40495E` |
+| Ethereum Sepolia | `0x749F3DF28c4C79f96b2eB652aBCAC02aE6D1761B` |
+| Base Sepolia | `0xc20e66365eCEe3a163b4107d389141F645E3Aa5B` |
+| Avalanche Fuji | `0x4438eBA2FcdD45bA3668f495f602C058e8826df6` |
+
+Fee recipient: `0xdb5019b8DfbccEF8906C39B16a4870082eAbBc4C`
+Re-deploy: `pnpm --filter @workspace/scripts run deploy`
+
 ## Gotchas
 
 - **ALL chains use CCTP V2** — the 7-param `depositForBurn` (selector `0x8e0250ee`). The V1 4-param selector (`0x6fd3504e`) will `require(false)` on these contracts.

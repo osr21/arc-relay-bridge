@@ -29,6 +29,7 @@ export interface BridgeStatus {
   feeTxHash?: string;
   burnTxHash?: string;
   mintTxHash?: string;
+  messageBytes?: string;
   error?: string;
   failedAtStep?: ActiveStep;
 }
@@ -158,14 +159,18 @@ async function waitForChainSwitch(expectedChainId: number, timeoutMs = 60000): P
 }
 
 export async function getUsdcBalance(address: string, chain: ChainConfig): Promise<string> {
-  try {
-    const provider = new ethers.JsonRpcProvider(chain.rpcUrl);
-    const usdc     = new ethers.Contract(chain.usdcAddress, USDC_ABI, provider);
-    const balance  = await usdc.balanceOf(address);
-    return ethers.formatUnits(balance, 6);
-  } catch {
-    return "0.000000";
+  const urls = [chain.rpcUrl, ...chain.rpcFallbacks];
+  for (const url of urls) {
+    try {
+      const provider = new ethers.JsonRpcProvider(url);
+      const usdc     = new ethers.Contract(chain.usdcAddress, USDC_ABI, provider);
+      const balance  = await usdc.balanceOf(address);
+      return ethers.formatUnits(balance, 6);
+    } catch {
+      // try next RPC
+    }
   }
+  return "0.000000";
 }
 
 function addressToBytes32(address: string): string {
@@ -190,6 +195,58 @@ function validateAmount(amount: string): bigint {
   }
   if (parsed <= 0n) throw new Error("Amount must be greater than zero.");
   return parsed;
+}
+
+// ── CCTP message helpers ──────────────────────────────────────────────────────
+
+/**
+ * Parse CCTP message bytes to extract sourceDomain and nonce.
+ * CCTP message layout (big-endian):
+ *   bytes  0- 3: version        (uint32)
+ *   bytes  4- 7: sourceDomain   (uint32)
+ *   bytes  8-11: destinationDomain (uint32)
+ *   bytes 12-19: nonce          (uint64)
+ */
+function parseMessageNonce(
+  messageBytes: string
+): { sourceDomain: number; nonce: bigint } | null {
+  try {
+    const hex = messageBytes.startsWith("0x") ? messageBytes.slice(2) : messageBytes;
+    if (hex.length < 40) return null;
+    const sourceDomain = parseInt(hex.slice(8, 16), 16);
+    const nonce        = BigInt("0x" + hex.slice(24, 40));
+    return { sourceDomain, nonce };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns true if the CCTP message has already been received on the destination.
+ * Queries usedNonces() on the MessageTransmitter. Safe default is false (don't
+ * assume minted if the check itself fails).
+ */
+async function checkNonceUsed(
+  messageBytes: string,
+  destChain: ChainConfig,
+  signer: ethers.Signer
+): Promise<boolean> {
+  try {
+    const parsed = parseMessageNonce(messageBytes);
+    if (!parsed) return false;
+    const sourceAndNonce = ethers.keccak256(
+      ethers.solidityPacked(["uint32", "uint64"], [parsed.sourceDomain, parsed.nonce])
+    );
+    const mt = new ethers.Contract(
+      destChain.messageTransmitter,
+      MESSAGE_TRANSMITTER_ABI,
+      signer
+    );
+    const result: bigint = await mt.usedNonces(sourceAndNonce);
+    return result !== 0n;
+  } catch {
+    return false;
+  }
 }
 
 // ── MessageSent parsing ───────────────────────────────────────────────────────
@@ -413,7 +470,8 @@ async function burnViaFeeRouter(
     toChain.cctpDomain,
     mintRecipient32,
     fromChain.usdcAddress,
-    fromChain.tokenMessenger
+    fromChain.tokenMessenger,
+    fromChain.minFinalityThreshold ?? 1000
   );
 
   onStatusChange({
@@ -601,13 +659,14 @@ export async function executeBridge(
       : "Burn confirmed. Requesting attestation from Circle...",
     feeTxHash,
     burnTxHash,
+    messageBytes,
   });
 
   const attestationResult = await pollAttestation(
     fromChain.cctpDomain,
     burnTxHash,
     messageBytes,
-    (msg) => onStatusChange({ step: "attesting", message: msg, feeTxHash, burnTxHash })
+    (msg) => onStatusChange({ step: "attesting", message: msg, feeTxHash, burnTxHash, messageBytes })
   );
 
   // ── Switch + Mint ──────────────────────────────────────────────────────
@@ -623,6 +682,19 @@ export async function executeBridge(
 
   const destProvider = await getProvider();
   const destSigner   = await destProvider.getSigner();
+
+  // Nonce replay check — message may have been minted in a previous attempt
+  const alreadyMinted = await checkNonceUsed(attestationResult.message, toChain, destSigner);
+  if (alreadyMinted) {
+    const receivedAmount = formatUsdc(fee.bridgeAmount);
+    onStatusChange({
+      step: "done",
+      message: `Already bridged! ${receivedAmount} USDC is on ${toChain.name} (message was previously received).`,
+      feeTxHash,
+      burnTxHash,
+    });
+    return;
+  }
 
   const messageTransmitter = new ethers.Contract(
     toChain.messageTransmitter,
@@ -656,6 +728,100 @@ export async function executeBridge(
   onStatusChange({
     step: "done",
     message: `Bridge complete! ${receivedAmount} USDC has arrived on ${toChain.name}.`,
+    feeTxHash,
+    burnTxHash,
+    mintTxHash: mintReceipt.hash,
+  });
+}
+
+// ── Resume (attestation + mint only) ─────────────────────────────────────────
+
+/**
+ * Resume an interrupted bridge from the attestation step.
+ * Used when the user has a saved session from a previous page visit.
+ * Skips approve/burn — picks up from attestation through to mint.
+ */
+export async function resumeBridge(
+  fromChain: ChainConfig,
+  toChain: ChainConfig,
+  burnTxHash: string,
+  messageBytes: string | undefined,
+  feeTxHash: string | undefined,
+  onStatusChange: (status: BridgeStatus) => void
+): Promise<void> {
+  onStatusChange({
+    step: "attesting",
+    message: messageBytes
+      ? "Resuming: waiting for Circle attestation via message hash…"
+      : "Resuming: waiting for Circle attestation…",
+    feeTxHash,
+    burnTxHash,
+    messageBytes,
+  });
+
+  const attestationResult = await pollAttestation(
+    fromChain.cctpDomain,
+    burnTxHash,
+    messageBytes,
+    (msg) => onStatusChange({ step: "attesting", message: msg, feeTxHash, burnTxHash, messageBytes })
+  );
+
+  onStatusChange({
+    step: "minting",
+    message: `Switching to ${toChain.name} to mint USDC…`,
+    feeTxHash,
+    burnTxHash,
+  });
+
+  await switchToChain(toChain);
+  await waitForChainSwitch(toChain.id);
+
+  const destProvider = await getProvider();
+  const destSigner   = await destProvider.getSigner();
+
+  // Nonce replay check — may have already been minted
+  const alreadyMinted = await checkNonceUsed(attestationResult.message, toChain, destSigner);
+  if (alreadyMinted) {
+    onStatusChange({
+      step: "done",
+      message: `Already bridged! USDC has arrived on ${toChain.name} (message was previously received).`,
+      feeTxHash,
+      burnTxHash,
+    });
+    return;
+  }
+
+  const messageTransmitter = new ethers.Contract(
+    toChain.messageTransmitter,
+    MESSAGE_TRANSMITTER_ABI,
+    destSigner
+  );
+
+  onStatusChange({ step: "minting", message: "Minting USDC on destination chain...", feeTxHash, burnTxHash });
+
+  const mintTx = await messageTransmitter.receiveMessage(
+    attestationResult.message,
+    attestationResult.attestation
+  );
+
+  onStatusChange({
+    step: "minting",
+    message: "Mint transaction submitted, waiting for confirmation...",
+    feeTxHash,
+    burnTxHash,
+    mintTxHash: mintTx.hash,
+  });
+
+  const mintReceipt = await mintTx.wait();
+  if (!mintReceipt) {
+    throw new Error(
+      "Mint transaction was not confirmed. Your funds are safe — the attestation is still valid."
+    );
+  }
+
+  onStatusChange({
+    step: "done",
+    message: `Bridge complete! USDC has arrived on ${toChain.name}.`,
     feeTxHash,
     burnTxHash,
     mintTxHash: mintReceipt.hash,

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ArrowDownUp, Info, RefreshCw, ExternalLink, Zap } from "lucide-react";
+import { ArrowDownUp, Info, RefreshCw, ExternalLink, Zap, RotateCcw } from "lucide-react";
 import { CHAINS, ChainConfig, getChainById } from "@/lib/chains";
 import {
   BridgeStatus,
@@ -9,10 +9,12 @@ import {
   getUsdcBalance,
   switchToChain,
   executeBridge,
+  resumeBridge,
   friendlyError,
   addUsdcToWallet,
 } from "@/lib/bridge";
 import { calculateFee, formatUsdc, FEE_BPS, isFeeActive } from "@/lib/config";
+import { BridgeSession, saveSession, loadSession, clearSession } from "@/lib/session";
 import { WalletButton } from "@/components/WalletButton";
 import { ChainSelector } from "@/components/ChainSelector";
 import { StepProgress } from "@/components/StepProgress";
@@ -42,6 +44,7 @@ export default function BridgePage() {
     step: "idle",
     message: "",
   });
+  const [resumeSession, setResumeSession] = useState<BridgeSession | null>(null);
 
   const currentStepRef  = useRef<ActiveStep | null>(null);
   const lastBurnTxRef   = useRef<string | undefined>(undefined);
@@ -66,6 +69,17 @@ export default function BridgePage() {
   }, [walletAddress, fromChain, toChain]);
 
   useEffect(() => { refreshBalances(); }, [refreshBalances]);
+
+  // Load any saved bridge session on mount
+  useEffect(() => {
+    const session = loadSession();
+    if (session) {
+      const from = getChainById(session.fromChainId);
+      const to   = getChainById(session.toChainId);
+      if (from && to) setResumeSession(session);
+      else clearSession();
+    }
+  }, []);
 
   useEffect(() => {
     if (!window.ethereum) return;
@@ -139,7 +153,6 @@ export default function BridgePage() {
     try {
       await executeBridge(fromChain, toChain, amount, effectiveRecipient, (status) => {
         setBridgeStatus(status);
-        // Track tx hashes so the error handler can preserve them if we throw later
         if (status.burnTxHash) lastBurnTxRef.current = status.burnTxHash;
         if (status.feeTxHash)  lastFeeTxRef.current  = status.feeTxHash;
         if (
@@ -151,13 +164,67 @@ export default function BridgePage() {
         ) {
           currentStepRef.current = status.step;
         }
+        // Save session once burn is confirmed so user can resume after a refresh
+        if (status.step === "attesting" && status.burnTxHash) {
+          saveSession({
+            burnTxHash:  status.burnTxHash,
+            feeTxHash:   status.feeTxHash,
+            messageBytes: status.messageBytes,
+            fromChainId: fromChain.id,
+            toChainId:   toChain.id,
+            amount,
+            recipient:   effectiveRecipient,
+            savedAt:     Date.now(),
+          });
+        }
       });
+      clearSession();
       await refreshBalances();
     } catch (err: unknown) {
-      // Preserve any tx hashes already emitted — critical for attestation timeout recovery
       setBridgeStatus({
         step: "error",
         message: "Bridge failed",
+        error: friendlyError(err),
+        failedAtStep: currentStepRef.current ?? undefined,
+        feeTxHash:    lastFeeTxRef.current,
+        burnTxHash:   lastBurnTxRef.current,
+      });
+    }
+  }
+
+  async function handleResume() {
+    if (!resumeSession || !walletAddress) return;
+    const from = getChainById(resumeSession.fromChainId);
+    const to   = getChainById(resumeSession.toChainId);
+    if (!from || !to) { clearSession(); setResumeSession(null); return; }
+
+    setFromChain(from);
+    setToChain(to);
+    setResumeSession(null);
+    currentStepRef.current = null;
+    lastBurnTxRef.current  = resumeSession.burnTxHash;
+    lastFeeTxRef.current   = resumeSession.feeTxHash;
+
+    try {
+      await resumeBridge(
+        from, to,
+        resumeSession.burnTxHash,
+        resumeSession.messageBytes,
+        resumeSession.feeTxHash,
+        (status) => {
+          setBridgeStatus(status);
+          if (status.burnTxHash) lastBurnTxRef.current = status.burnTxHash;
+          if (
+            status.step === "attesting" || status.step === "minting"
+          ) currentStepRef.current = status.step;
+        }
+      );
+      clearSession();
+      await refreshBalances();
+    } catch (err: unknown) {
+      setBridgeStatus({
+        step: "error",
+        message: "Resume failed",
         error: friendlyError(err),
         failedAtStep: currentStepRef.current ?? undefined,
         feeTxHash:    lastFeeTxRef.current,
@@ -170,6 +237,12 @@ export default function BridgePage() {
     setBridgeStatus({ step: "idle", message: "" });
     setAmount("");
     currentStepRef.current = null;
+    clearSession();
+  }
+
+  function handleDismissResume() {
+    clearSession();
+    setResumeSession(null);
   }
 
   const isProcessing =
@@ -257,6 +330,47 @@ export default function BridgePage() {
             </div>
 
             <div className="p-6 space-y-4">
+
+              {/* ── Resume interrupted session banner ── */}
+              {resumeSession && bridgeStatus.step === "idle" && (() => {
+                const from = getChainById(resumeSession.fromChainId);
+                const to   = getChainById(resumeSession.toChainId);
+                if (!from || !to) return null;
+                const minsAgo = Math.round((Date.now() - resumeSession.savedAt) / 60000);
+                return (
+                  <div className="flex items-start justify-between gap-3 px-4 py-3 bg-[#4F9CF9]/10 border border-[#4F9CF9]/30 rounded-xl">
+                    <div className="flex items-start gap-2 min-w-0">
+                      <RotateCcw className="w-4 h-4 text-[#4F9CF9] mt-0.5 flex-shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-[#7BB8FB] text-xs font-semibold">Interrupted transfer found</p>
+                        <p className="text-slate-400 text-[11px] mt-0.5 leading-relaxed">
+                          {resumeSession.amount} USDC · {from.shortName} → {to.shortName}
+                          {minsAgo > 0 ? ` · ${minsAgo}m ago` : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-1.5 flex-shrink-0">
+                      {walletAddress ? (
+                        <button
+                          onClick={handleResume}
+                          className="text-xs font-semibold text-[#4F9CF9] border border-[#4F9CF9]/40 px-3 py-1.5 rounded-lg hover:bg-[#4F9CF9]/10 transition-all whitespace-nowrap"
+                        >
+                          Resume
+                        </button>
+                      ) : (
+                        <span className="text-xs text-slate-500 py-1.5">Connect wallet to resume</span>
+                      )}
+                      <button
+                        onClick={handleDismissResume}
+                        className="text-xs text-slate-500 hover:text-slate-300 px-2 py-1.5 transition-colors"
+                        title="Dismiss"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Wrong network banner */}
               {wrongNetwork && (
@@ -549,7 +663,7 @@ export default function BridgePage() {
               <Info className="w-3.5 h-3.5 text-slate-500 mt-0.5 flex-shrink-0" />
               <p className="text-[11px] text-slate-500 leading-relaxed">
                 Uses Circle CCTP V2 — USDC is burned on source and natively minted on destination.
-                Arc Testnet CCTP Domain: <span className="text-slate-400 font-mono">7</span>.
+                Arc Testnet CCTP Domain: <span className="text-slate-400 font-mono">26</span>.
                 Get testnet USDC from the{" "}
                 <a href="https://faucet.circle.com" target="_blank" rel="noopener noreferrer"
                   className="text-[#4F9CF9] hover:underline">Circle Faucet</a>.
@@ -559,7 +673,7 @@ export default function BridgePage() {
 
           {/* ── Chain pills ── */}
           <div className="grid grid-cols-2 gap-2">
-            <a href="https://explorer.testnet.arc.network" target="_blank" rel="noopener noreferrer"
+            <a href="https://docs.arc.io" target="_blank" rel="noopener noreferrer"
               className="flex items-center gap-2 px-3 py-2 bg-[#111827]/60 border border-white/[0.05] rounded-xl hover:border-[#4F9CF9]/30 transition-all group">
               <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
                 style={{ background: CHAINS.ARC_TESTNET.logoColor }}>⬡</span>

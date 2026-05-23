@@ -3,13 +3,13 @@ pragma solidity ^0.8.20;
 
 /**
  * @title FeeRouter
- * @notice Collects a protocol fee and forwards the net amount to Circle's CCTP
+ * @notice Collects a protocol fee and forwards the net amount to Circle's CCTP V2
  *         TokenMessenger in a single user transaction.
  *
  * Flow:
  *   1. User approves FeeRouter for `grossAmount` USDC.
  *   2. User calls bridge() — FeeRouter pulls grossAmount, transfers feeAmount to
- *      feeRecipient, then calls TokenMessenger.depositForBurn with netAmount.
+ *      feeRecipient, then calls TokenMessenger.depositForBurn (CCTP V2) with netAmount.
  *   3. Attestation + mint happens off-chain as normal CCTP flow.
  *
  * Owner can update feeBps and feeRecipient at any time.
@@ -22,19 +22,23 @@ interface IERC20 {
     function approve(address spender, uint256 amount) external returns (bool);
 }
 
-interface ITokenMessenger {
+/// @dev CCTP V2 TokenMessenger — selector 0x8e0250ee (7 params)
+interface ITokenMessengerV2 {
     function depositForBurn(
         uint256 amount,
-        uint32 destinationDomain,
+        uint32  destinationDomain,
         bytes32 mintRecipient,
-        address burnToken
+        address burnToken,
+        bytes32 destinationCaller,
+        uint256 maxFee,
+        uint32  minFinalityThreshold
     ) external returns (uint64 nonce);
 }
 
 contract FeeRouter {
     address public owner;
     address public feeRecipient;
-    uint256 public feeBps;          // e.g. 30 = 0.30%
+    uint256 public feeBps;
     uint256 public constant MAX_FEE_BPS = 500; // 5% hard cap
 
     event BridgeInitiated(
@@ -65,34 +69,33 @@ contract FeeRouter {
     }
 
     /**
-     * @notice Bridge USDC cross-chain via CCTP with fee deduction.
-     * @param grossAmount       Total USDC (6 decimals) to pull from caller.
-     * @param destinationDomain CCTP domain ID of the destination chain.
-     * @param mintRecipient     32-byte padded recipient address on destination.
-     * @param usdc              USDC contract address on this chain.
-     * @param tokenMessenger    Circle TokenMessenger contract on this chain.
+     * @notice Bridge USDC cross-chain via CCTP V2 with fee deduction.
+     * @param grossAmount          Total USDC (6 decimals) to pull from caller.
+     * @param destinationDomain    CCTP domain ID of the destination chain.
+     * @param mintRecipient        32-byte padded recipient address on destination.
+     * @param usdc                 USDC contract address on this chain.
+     * @param tokenMessenger       Circle CCTP V2 TokenMessenger on this chain.
+     * @param minFinalityThreshold CCTP V2 finality threshold (2000=finalized, 1000=safe).
      */
     function bridge(
         uint256 grossAmount,
         uint32  destinationDomain,
         bytes32 mintRecipient,
         address usdc,
-        address tokenMessenger
+        address tokenMessenger,
+        uint32  minFinalityThreshold
     ) external returns (uint64 nonce) {
         require(grossAmount > 0, "FeeRouter: zero amount");
 
-        // Pull full gross amount from sender
         require(
             IERC20(usdc).transferFrom(msg.sender, address(this), grossAmount),
             "FeeRouter: transferFrom failed"
         );
 
-        // Calculate fee
         uint256 feeAmount    = (grossAmount * feeBps) / 10000;
         uint256 bridgeAmount = grossAmount - feeAmount;
         require(bridgeAmount > 0, "FeeRouter: bridge amount zero");
 
-        // Send fee to recipient
         if (feeAmount > 0) {
             require(
                 IERC20(usdc).transfer(feeRecipient, feeAmount),
@@ -100,18 +103,20 @@ contract FeeRouter {
             );
         }
 
-        // Approve TokenMessenger to spend bridgeAmount
         require(
             IERC20(usdc).approve(tokenMessenger, bridgeAmount),
             "FeeRouter: approve failed"
         );
 
-        // Initiate CCTP burn
-        nonce = ITokenMessenger(tokenMessenger).depositForBurn(
+        // CCTP V2: destinationCaller=0 (anyone may relay), maxFee=0 (no premium)
+        nonce = ITokenMessengerV2(tokenMessenger).depositForBurn(
             bridgeAmount,
             destinationDomain,
             mintRecipient,
-            usdc
+            usdc,
+            bytes32(0),          // destinationCaller = anyone
+            0,                   // maxFee = 0
+            minFinalityThreshold
         );
 
         emit BridgeInitiated(
@@ -125,8 +130,6 @@ contract FeeRouter {
             tokenMessenger
         );
     }
-
-    // ── Admin ──────────────────────────────────────────────────────────────
 
     function setFeeBps(uint256 _feeBps) external onlyOwner {
         require(_feeBps <= MAX_FEE_BPS, "FeeRouter: fee too high");
@@ -146,10 +149,6 @@ contract FeeRouter {
         owner = newOwner;
     }
 
-    /**
-     * @notice Emergency rescue for any ERC-20 accidentally sent to this contract.
-     *         Should never hold funds — everything is atomic — but just in case.
-     */
     function rescueTokens(address token, uint256 amount) external onlyOwner {
         IERC20(token).transfer(owner, amount);
     }
