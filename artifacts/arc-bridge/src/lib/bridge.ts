@@ -3,6 +3,7 @@ import {
   ChainConfig,
   USDC_ABI,
   TOKEN_MESSENGER_ABI,
+  TOKEN_MESSENGER_V2_ABI,
   MESSAGE_TRANSMITTER_ABI,
   ATTESTATION_API,
 } from "./chains";
@@ -465,13 +466,30 @@ async function burnWithManualFee(
   // ── Step 3: depositForBurn ─────────────────────────────────────────────
   onStatusChange({ step: "burning", message: "Initiating cross-chain transfer...", feeTxHash });
 
-  const tokenMessenger = new ethers.Contract(fromChain.tokenMessenger, TOKEN_MESSENGER_ABI, signer);
-  const burnTx = await tokenMessenger.depositForBurn(
-    fee.bridgeAmount,
-    toChain.cctpDomain,
-    mintRecipient32,
-    fromChain.usdcAddress
-  );
+  const isV2 = fromChain.cctpVersion === 2;
+  const messengerAbi = isV2 ? TOKEN_MESSENGER_V2_ABI : TOKEN_MESSENGER_ABI;
+  const tokenMessenger = new ethers.Contract(fromChain.tokenMessenger, messengerAbi, signer);
+
+  // CCTP V2 (Arc Testnet) requires three extra parameters:
+  //   destinationCaller = bytes32(0) → anyone may relay
+  //   maxFee            = 0          → no premium for fast finality
+  //   minFinalityThreshold = 2000    → finalized (matches on-chain default)
+  const burnTx = isV2
+    ? await tokenMessenger.depositForBurn(
+        fee.bridgeAmount,
+        toChain.cctpDomain,
+        mintRecipient32,
+        fromChain.usdcAddress,
+        ethers.ZeroHash,  // destinationCaller = 0 (anyone)
+        0n,               // maxFee = 0
+        2000              // minFinalityThreshold
+      )
+    : await tokenMessenger.depositForBurn(
+        fee.bridgeAmount,
+        toChain.cctpDomain,
+        mintRecipient32,
+        fromChain.usdcAddress
+      );
 
   onStatusChange({
     step: "burning",

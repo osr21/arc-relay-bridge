@@ -11,6 +11,8 @@ export interface ChainConfig {
   messageTransmitter: string;
   nativeCurrency: { name: string; symbol: string; decimals: number };
   isArc?: boolean;
+  /** CCTP version used by this chain's TokenMessenger (1 = V1 4-param, 2 = V2 7-param) */
+  cctpVersion?: 1 | 2;
   logoColor: string;
 }
 
@@ -28,6 +30,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
     isArc: true,
+    cctpVersion: 2,
     logoColor: "#354457",
   },
   ETH_SEPOLIA: {
@@ -90,8 +93,21 @@ export const USDC_ABI = [
   "function transfer(address to, uint256 amount) returns (bool)",
 ];
 
+/** CCTP V1 TokenMessenger ABI (Sepolia, Base, Fuji) */
 export const TOKEN_MESSENGER_ABI = [
   "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken) returns (uint64 nonce)",
+  "event MessageSent(bytes message)",
+];
+
+/**
+ * CCTP V2 TokenMessenger ABI (Arc Testnet).
+ * Selector 0x8e0250ee — adds destinationCaller, maxFee, minFinalityThreshold.
+ * destinationCaller = bytes32(0) → anyone may relay
+ * maxFee = 0 → no premium for fast finality
+ * minFinalityThreshold = 2000 → finalized (safe)
+ */
+export const TOKEN_MESSENGER_V2_ABI = [
+  "function depositForBurn(uint256 amount, uint32 destinationDomain, bytes32 mintRecipient, address burnToken, bytes32 destinationCaller, uint256 maxFee, uint32 minFinalityThreshold) returns (uint64 nonce)",
   "event MessageSent(bytes message)",
 ];
 
