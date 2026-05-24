@@ -122,15 +122,29 @@ export async function switchToChain(chain: ChainConfig): Promise<void> {
 /** Normalise any thrown error into a clean, user-facing message. */
 export function friendlyError(err: unknown): string {
   const msg = (err as Error)?.message ?? String(err);
+  const code = (err as { code?: unknown })?.code;
 
   // MetaMask / EIP-1193 user rejection
   if (
     msg.includes("user rejected") ||
     msg.includes("User denied") ||
     msg.includes("ACTION_REJECTED") ||
-    (err as { code?: unknown })?.code === 4001
+    code === 4001 ||
+    code === "ACTION_REJECTED"
   ) {
     return "Transaction cancelled — you rejected the request in your wallet.";
+  }
+
+  // On-chain execution reverted (ethers v6 throws from wait() with CALL_EXCEPTION)
+  if (
+    code === "CALL_EXCEPTION" ||
+    msg.includes("execution reverted") ||
+    msg.includes("transaction reverted")
+  ) {
+    const reason = (err as { reason?: string })?.reason;
+    if (reason && reason !== "null") return `Transaction reverted: ${reason}`;
+    // Arc Testnet doesn't return revert data — give a helpful fallback
+    return "Transaction reverted on-chain. Check your USDC balance, gas, and try again.";
   }
 
   // Insufficient funds for gas
@@ -143,8 +157,13 @@ export function friendlyError(err: unknown): string {
     return "Network error — check your internet connection and try again.";
   }
 
+  // Gas estimation failure (Arc Testnet broken estimateGas)
+  if (msg.includes("estimateGas") || msg.includes("missing revert data")) {
+    return "Gas estimation failed — the transaction may be misconfigured or the RPC is unavailable. Try again.";
+  }
+
   // Return the first line only (ethers wraps long messages with newlines)
-  return msg.split("\n")[0];
+  return msg.split("\n")[0].slice(0, 200);
 }
 
 async function waitForChainSwitch(expectedChainId: number, timeoutMs = 60000): Promise<void> {
@@ -169,7 +188,8 @@ export async function getUsdcBalance(address: string, chain: ChainConfig): Promi
       // try next RPC
     }
   }
-  return "0.000000";
+  // All RPCs failed — return sentinel so callers can distinguish from a real zero balance
+  return "—";
 }
 
 function addressToBytes32(address: string): string {
@@ -634,9 +654,12 @@ export async function executeBridge(
 
   onStatusChange({ step: "minting", message: "Minting USDC on destination chain...", feeTxHash, burnTxHash });
 
+  // Apply gas override on chains where eth_estimateGas is unreliable (e.g. Arc Testnet as destination).
+  const mintOverrides = toChain.gasLimitOverride ? { gasLimit: toChain.gasLimitOverride } : {};
   const mintTx = await messageTransmitter.receiveMessage(
     attestationResult.message,
-    attestationResult.attestation
+    attestationResult.attestation,
+    mintOverrides
   );
 
   onStatusChange({
@@ -729,9 +752,12 @@ export async function resumeBridge(
 
   onStatusChange({ step: "minting", message: "Minting USDC on destination chain...", feeTxHash, burnTxHash });
 
+  // Apply gas override on chains where eth_estimateGas is unreliable (e.g. Arc Testnet as destination).
+  const mintOverrides = toChain.gasLimitOverride ? { gasLimit: toChain.gasLimitOverride } : {};
   const mintTx = await messageTransmitter.receiveMessage(
     attestationResult.message,
-    attestationResult.attestation
+    attestationResult.attestation,
+    mintOverrides
   );
 
   onStatusChange({

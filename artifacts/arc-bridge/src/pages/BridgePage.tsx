@@ -294,10 +294,12 @@ export default function BridgePage() {
             className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
             Faucet <ExternalLink className="w-3 h-3" />
           </a>
-          <a href="https://sepolia.etherscan.io" target="_blank" rel="noopener noreferrer"
-            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
-            Explorer <ExternalLink className="w-3 h-3" />
-          </a>
+          {fromChain.explorerUrl ? (
+            <a href={fromChain.explorerUrl} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
+              Explorer <ExternalLink className="w-3 h-3" />
+            </a>
+          ) : null}
           <WalletButton address={walletAddress} chainId={walletChainId} onConnect={handleWalletConnect} />
         </div>
       </header>
