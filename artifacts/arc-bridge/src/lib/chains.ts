@@ -39,7 +39,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     rpcFallbacks: [
       "https://rpc.testnet.arc.network",
     ],
-    explorerUrl: "",
+    explorerUrl: "https://testnet.arcscan.app",
     cctpDomain: 26,
     usdcAddress: "0x3600000000000000000000000000000000000000",
     tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",

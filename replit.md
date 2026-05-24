@@ -74,7 +74,7 @@ Re-deploy: `pnpm --filter @workspace/scripts run deploy`
 - **ALL chains use CCTP V2** — the 7-param `depositForBurn` (selector `0x8e0250ee`). The V1 4-param selector (`0x6fd3504e`) will `require(false)` on these contracts.
 - Arc Testnet USDC: `0x3600000000000000000000000000000000000000` (special system address)
 - Arc native USDC uses 18 decimals for gas, but the ERC-20 interface uses 6 decimals — always use ERC-20 interface
-- Arc Testnet explorer (`explorer.testnet.arc.network`) is down; `explorer.arc.io` requires team login. TxLink shows copy-to-clipboard for Arc tx hashes instead of dead links.
+- Arc Testnet explorer: `https://testnet.arcscan.app` (use `/tx/{hash}` for transactions). Previous explorer URLs (`explorer.testnet.arc.network`, `explorer.arc.io`) are dead.
 - Sepolia RPC: use `https://ethereum-sepolia-rpc.publicnode.com` — `rpc.sepolia.org` is unreliable/down
 - Attestation timing: Arc burns attest in ~1-3 min; Sepolia→Arc burns attest in ~2-5 min (safe finality). UI polls every 5s for up to 20 min.
 - The V2 `depositForBurn` parameters: `destinationCaller=bytes32(0)` (anyone may relay), `maxFee=0`, `minFinalityThreshold` per chain.
