@@ -219,31 +219,25 @@ function validateAmount(amount: string): bigint {
 // ── CCTP message helpers ──────────────────────────────────────────────────────
 
 /**
- * Parse CCTP message bytes to extract sourceDomain and nonce.
- * CCTP message layout (big-endian):
- *   bytes  0- 3: version        (uint32)
- *   bytes  4- 7: sourceDomain   (uint32)
+ * CCTP V2 message layout (big-endian):
+ *   bytes  0- 3: version           (uint32)
+ *   bytes  4- 7: sourceDomain      (uint32)
  *   bytes  8-11: destinationDomain (uint32)
- *   bytes 12-19: nonce          (uint64)
+ *   bytes 12-43: nonce             (bytes32) ← V2 uses bytes32, always 0x00 on Arc
+ *   bytes 44-75: sender            (bytes32)
+ *   bytes 76-107: recipient        (bytes32)
+ *   bytes 108-139: destinationCaller (bytes32)
+ *   bytes 140+:  messageBody
+ *
+ * Note: Arc's CCTP V2 implementation encodes nonce as all-zero bytes32.
+ * Replay protection uses keccak256(messageBytes) as the usedNonces key — NOT
+ * keccak256(sourceDomain, nonce) as in CCTP V1.
  */
-function parseMessageNonce(
-  messageBytes: string
-): { sourceDomain: number; nonce: bigint } | null {
-  try {
-    const hex = messageBytes.startsWith("0x") ? messageBytes.slice(2) : messageBytes;
-    if (hex.length < 40) return null;
-    const sourceDomain = parseInt(hex.slice(8, 16), 16);
-    const nonce        = BigInt("0x" + hex.slice(24, 40));
-    return { sourceDomain, nonce };
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Returns true if the CCTP message has already been received on the destination.
- * Queries usedNonces() on the MessageTransmitter. Safe default is false (don't
- * assume minted if the check itself fails).
+ * Queries usedNonces(keccak256(messageBytes)) on the MessageTransmitter.
+ * Safe default is false (don't assume minted if the check itself fails).
  */
 async function checkNonceUsed(
   messageBytes: string,
@@ -251,17 +245,14 @@ async function checkNonceUsed(
   signer: ethers.Signer
 ): Promise<boolean> {
   try {
-    const parsed = parseMessageNonce(messageBytes);
-    if (!parsed) return false;
-    const sourceAndNonce = ethers.keccak256(
-      ethers.solidityPacked(["uint32", "uint64"], [parsed.sourceDomain, parsed.nonce])
-    );
+    // CCTP V2 replay protection key is the hash of the full message bytes.
+    const messageHash = ethers.keccak256(messageBytes);
     const mt = new ethers.Contract(
       destChain.messageTransmitter,
       MESSAGE_TRANSMITTER_ABI,
       signer
     );
-    const result: bigint = await mt.usedNonces(sourceAndNonce);
+    const result: bigint = await mt.usedNonces(messageHash);
     return result !== 0n;
   } catch {
     return false;
@@ -397,9 +388,9 @@ async function pollAttestation(
       : "Burn confirmed. Waiting for Circle attestation (this can take a few minutes on testnet)…"
   );
 
-  // 240 attempts × 5 s = 20 minutes total
+  // 240 attempts × 5 s = 20 minutes total. First attempt is immediate.
   for (let i = 0; i < 240; i++) {
-    await new Promise((r) => setTimeout(r, 5000));
+    if (i > 0) await new Promise((r) => setTimeout(r, 5000));
 
     const attempt = `${i + 1}/240`;
     const elapsed = Math.floor(((i + 1) * 5) / 60);

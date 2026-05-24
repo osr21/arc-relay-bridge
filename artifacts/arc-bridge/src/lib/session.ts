@@ -32,6 +32,7 @@ export function loadSession(): BridgeSession | null {
     const session = JSON.parse(raw) as BridgeSession;
     if (
       typeof session.burnTxHash !== "string" ||
+      !/^0x[0-9a-fA-F]{64}$/.test(session.burnTxHash) ||
       typeof session.fromChainId !== "number" ||
       typeof session.toChainId !== "number" ||
       typeof session.savedAt !== "number"

@@ -270,13 +270,21 @@ export default function BridgePage() {
     amountIsValid &&
     parsedAmount > fromBalanceNum;
 
+  // Custom recipient validity — only flagged when the custom address field is active and non-empty
+  const customRecipientInvalid =
+    useCustomRecipient && recipient.trim() !== "" && !ethers.isAddress(recipient.trim());
+  const customRecipientMissing =
+    useCustomRecipient && recipient.trim() === "";
+
   const canBridge =
     !!walletAddress &&
     amountIsValid &&
     !isProcessing &&
     !wrongNetwork &&
     !sameChain &&
-    !insufficientBalance;
+    !insufficientBalance &&
+    !customRecipientInvalid &&
+    !customRecipientMissing;
 
   function applyMaxBalance() {
     if (fromBalance !== "—" && fromBalance !== "0.000000") setAmount(fromBalance);
@@ -486,16 +494,26 @@ export default function BridgePage() {
                   {useCustomRecipient ? "▼" : "▶"} Send to different address
                 </button>
                 {useCustomRecipient && (
-                  <input type="text" value={recipient}
-                    onChange={(e) => setRecipient(e.target.value)}
-                    placeholder="0x… recipient address on destination chain"
-                    disabled={isProcessing}
-                    className={cn(
-                      "mt-2 w-full px-3 py-2.5 rounded-xl text-sm font-mono text-white",
-                      "bg-slate-800/80 border border-slate-700/60 focus:border-[#4F9CF9]/60 focus:outline-none",
-                      "placeholder:text-slate-600 transition-colors disabled:opacity-50"
+                  <>
+                    <input type="text" value={recipient}
+                      onChange={(e) => setRecipient(e.target.value)}
+                      placeholder="0x… recipient address on destination chain"
+                      disabled={isProcessing}
+                      className={cn(
+                        "mt-2 w-full px-3 py-2.5 rounded-xl text-sm font-mono text-white",
+                        "bg-slate-800/80 border focus:outline-none transition-colors disabled:opacity-50",
+                        customRecipientInvalid
+                          ? "border-red-500/60 focus:border-red-500"
+                          : "border-slate-700/60 focus:border-[#4F9CF9]/60",
+                        "placeholder:text-slate-600"
+                      )}
+                    />
+                    {customRecipientInvalid && (
+                      <p className="text-xs text-red-400 px-1 mt-1">
+                        Invalid Ethereum address.
+                      </p>
                     )}
-                  />
+                  </>
                 )}
               </div>
 
