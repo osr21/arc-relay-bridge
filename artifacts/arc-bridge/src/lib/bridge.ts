@@ -176,6 +176,62 @@ async function waitForChainSwitch(expectedChainId: number, timeoutMs = 60000): P
   throw new Error("Chain switch timed out. Please switch networks manually and try again.");
 }
 
+/**
+ * Wait for a transaction receipt with automatic retry on transient network errors.
+ *
+ * ethers v6 BrowserProvider can throw "underlying network changed" immediately after
+ * a MetaMask chain switch — even when the transaction was already mined. In that case
+ * `tx.wait()` throws before returning the receipt, making the bridge appear to have
+ * failed even though the USDC arrived. This helper catches those false-negative errors
+ * and retries by polling the receipt directly via a static JSON-RPC provider so we are
+ * independent of MetaMask's connection state.
+ */
+async function waitWithRetry(
+  tx: ethers.TransactionResponse,
+  chain: ChainConfig,
+  retries = 4,
+  retryDelayMs = 4000
+): Promise<ethers.TransactionReceipt> {
+  const isNetworkErr = (err: unknown) => {
+    const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+    return (
+      msg.includes("network") ||
+      msg.includes("could not detect") ||
+      msg.includes("connection") ||
+      msg.includes("timeout")
+    );
+  };
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const receipt = await tx.wait();
+      if (receipt) return receipt;
+    } catch (err) {
+      // Re-throw non-network errors immediately (e.g. CALL_EXCEPTION, ACTION_REJECTED)
+      if (!isNetworkErr(err)) throw err;
+      if (attempt === retries) throw err;
+    }
+
+    // Brief pause then try fetching the receipt directly via a static RPC provider —
+    // this is independent of MetaMask's state and works even if the wallet is mid-switch.
+    await new Promise((r) => setTimeout(r, retryDelayMs));
+    const urls = [chain.rpcUrl, ...chain.rpcFallbacks];
+    for (const url of urls) {
+      try {
+        const staticProvider = new ethers.JsonRpcProvider(url);
+        const receipt = await staticProvider.getTransactionReceipt(tx.hash);
+        if (receipt) return receipt;
+      } catch {
+        // try next RPC
+      }
+    }
+  }
+
+  throw new Error(
+    "Mint transaction was not confirmed after multiple attempts. Your funds are safe — the attestation is still valid. Check the explorer and retry the mint."
+  );
+}
+
 export async function getUsdcBalance(address: string, chain: ChainConfig): Promise<string> {
   const urls = [chain.rpcUrl, ...chain.rpcFallbacks];
   for (const url of urls) {
@@ -661,12 +717,7 @@ export async function executeBridge(
     mintTxHash: mintTx.hash,
   });
 
-  const mintReceipt = await mintTx.wait();
-  if (!mintReceipt) {
-    throw new Error(
-      "Mint transaction was not confirmed. Your funds are safe — the attestation is still valid. Check the explorer and retry the mint."
-    );
-  }
+  const mintReceipt = await waitWithRetry(mintTx, toChain);
 
   const receivedAmount = formatUsdc(fee.bridgeAmount);
   onStatusChange({
@@ -759,12 +810,7 @@ export async function resumeBridge(
     mintTxHash: mintTx.hash,
   });
 
-  const mintReceipt = await mintTx.wait();
-  if (!mintReceipt) {
-    throw new Error(
-      "Mint transaction was not confirmed. Your funds are safe — the attestation is still valid."
-    );
-  }
+  const mintReceipt = await waitWithRetry(mintTx, toChain);
 
   onStatusChange({
     step: "done",
