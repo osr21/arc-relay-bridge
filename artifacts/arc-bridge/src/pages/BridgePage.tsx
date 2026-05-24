@@ -261,15 +261,22 @@ export default function BridgePage() {
     : null;
   const feeBreakdown = grossUnits !== null ? calculateFee(grossUnits) : null;
 
+  const walletChain    = walletChainId ? getChainById(walletChainId) : null;
+  const fromBalanceNum = safeParseBalance(fromBalance);
+
+  // Insufficient balance — only flag when balance is known (not still loading)
+  const insufficientBalance =
+    fromBalanceNum !== null &&
+    amountIsValid &&
+    parsedAmount > fromBalanceNum;
+
   const canBridge =
     !!walletAddress &&
     amountIsValid &&
     !isProcessing &&
     !wrongNetwork &&
-    !sameChain;
-
-  const walletChain    = walletChainId ? getChainById(walletChainId) : null;
-  const fromBalanceNum = safeParseBalance(fromBalance);
+    !sameChain &&
+    !insufficientBalance;
 
   function applyMaxBalance() {
     if (fromBalance !== "—" && fromBalance !== "0.000000") setAmount(fromBalance);
@@ -408,7 +415,7 @@ export default function BridgePage() {
                   <div className="flex items-center justify-between px-1">
                     <span className="text-xs text-slate-500">Balance</span>
                     <button onClick={applyMaxBalance}
-                      disabled={fromBalanceNum === null || isProcessing}
+                      disabled={!fromBalanceNum || isProcessing}
                       className="text-xs text-[#4F9CF9] hover:text-[#7BB8FB] font-mono transition-colors disabled:text-slate-500 disabled:cursor-default">
                       {fromBalance} USDC
                     </button>
@@ -431,13 +438,20 @@ export default function BridgePage() {
                 />
                 <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
                   <button onClick={applyMaxBalance}
-                    disabled={fromBalanceNum === null || !walletAddress || isProcessing}
+                    disabled={!fromBalanceNum || !walletAddress || isProcessing}
                     className="text-xs font-semibold text-[#4F9CF9] hover:text-[#7BB8FB] disabled:text-slate-600 disabled:cursor-not-allowed transition-colors">
                     MAX
                   </button>
                   <span className="text-slate-400 text-sm font-medium">USDC</span>
                 </div>
               </div>
+
+              {/* Insufficient balance warning */}
+              {insufficientBalance && (
+                <p className="text-xs text-red-400 px-1">
+                  Insufficient balance — you have {fromBalance} USDC on {fromChain.shortName}.
+                </p>
+              )}
 
               {/* Swap chains */}
               <div className="flex justify-center -my-1">
