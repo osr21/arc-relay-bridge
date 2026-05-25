@@ -84,39 +84,22 @@ export async function getWalletChainId(): Promise<number> {
 
 export async function switchToChain(chain: ChainConfig): Promise<void> {
   if (!window.ethereum) throw new Error("No wallet detected.");
-  try {
-    await window.ethereum.request({
-      method: "wallet_switchEthereumChain",
-      params: [{ chainId: chain.hexId }],
-    });
-  } catch (err: unknown) {
-    const switchError = err as { code?: number };
-    if (switchError.code === 4902) {
-      const explorerUrls = chain.explorerUrl ? [chain.explorerUrl] : [];
-      await window.ethereum.request({
-        method: "wallet_addEthereumChain",
-        params: [
-          {
-            chainId: chain.hexId,
-            chainName: chain.name,
-            nativeCurrency: chain.nativeCurrency,
-            rpcUrls: [chain.rpcUrl],
-            ...(explorerUrls.length > 0 && { blockExplorerUrls: explorerUrls }),
-          },
-        ],
-      });
-      try {
-        await window.ethereum.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: chain.hexId }],
-        });
-      } catch {
-        // wallet_addEthereumChain may have already switched
-      }
-    } else {
-      throw err;
-    }
-  }
+  // wallet_switchEthereumChain fails silently for custom networks (e.g. Arc Testnet) in MetaMask.
+  // wallet_addEthereumChain is the correct method — it adds the network if missing AND switches
+  // to it if already present, making it safe to call unconditionally. See arc-node#89.
+  const explorerUrls = chain.explorerUrl ? [chain.explorerUrl] : [];
+  await window.ethereum.request({
+    method: "wallet_addEthereumChain",
+    params: [
+      {
+        chainId: chain.hexId,
+        chainName: chain.name,
+        nativeCurrency: chain.nativeCurrency,
+        rpcUrls: [chain.rpcUrl],
+        ...(explorerUrls.length > 0 && { blockExplorerUrls: explorerUrls }),
+      },
+    ],
+  });
 }
 
 /** Normalise any thrown error into a clean, user-facing message. */
@@ -492,6 +475,24 @@ async function pollAttestation(
   );
 }
 
+/**
+ * Fetch the current gas price and apply a 30% upward bump.
+ *
+ * Arc Testnet's eth_gasPrice returns a stale baseline. Without the premium,
+ * back-to-back transactions (approve → fee → burn) fail with
+ * "replacement transaction underpriced". See arc-node#87.
+ * Returns undefined if the provider can't supply fee data (non-blocking).
+ */
+async function getBumpedGasPrice(signer: ethers.Signer): Promise<bigint | undefined> {
+  try {
+    const feeData = await signer.provider!.getFeeData();
+    if (!feeData.gasPrice) return undefined;
+    return (feeData.gasPrice * 130n) / 100n;
+  } catch {
+    return undefined;
+  }
+}
+
 // ── Burn path: approve → transfer fee → depositForBurn ────────────────────
 
 async function burnWithManualFee(
@@ -510,10 +511,19 @@ async function burnWithManualFee(
   // ── Step 1: Approve TokenMessenger for bridge amount only ──────────────
   onStatusChange({ step: "approving", message: "Checking USDC allowance..." });
 
-  // On chains where eth_estimateGas is unreliable (e.g. Arc Testnet), bypass it.
-  const writeOverrides = fromChain.gasLimitOverride
-    ? { gasLimit: fromChain.gasLimitOverride }
-    : {};
+  // Fetch a bumped gas price once upfront and reuse for all three write calls.
+  // Arc Testnet returns a stale baseline from eth_gasPrice — back-to-back transactions
+  // (approve → fee → burn) fail with "replacement transaction underpriced" without ≥30%
+  // premium. See arc-node#87. On chains that don't return gasPrice this returns undefined
+  // and ethers.js uses the default estimation.
+  const gasPrice = await getBumpedGasPrice(signer);
+
+  // Build base overrides: explicit gasLimit on chains where eth_estimateGas is unreliable
+  // (e.g. Arc Testnet), plus the bumped gas price on all chains. See arc-node#80.
+  const writeOverrides: Record<string, unknown> = {
+    ...(fromChain.gasLimitOverride && { gasLimit: fromChain.gasLimitOverride }),
+    ...(gasPrice !== undefined    && { gasPrice }),
+  };
 
   const allowance: bigint = await usdc.allowance(signerAddress, fromChain.tokenMessenger);
   if (allowance < fee.bridgeAmount) {
@@ -523,7 +533,7 @@ async function burnWithManualFee(
       message: "Approval submitted, waiting for confirmation...",
       txHash: approveTx.hash,
     });
-    const approveReceipt = await approveTx.wait();
+    const approveReceipt = await waitWithRetry(approveTx, fromChain);
     if (!approveReceipt) throw new Error("Approval transaction was not confirmed. Please try again.");
   } else {
     onStatusChange({ step: "approving", message: "Allowance sufficient, skipping approval." });
@@ -542,7 +552,7 @@ async function burnWithManualFee(
       message: `Fee of ${formatUsdc(fee.feeAmount)} USDC submitted...`,
       feeTxHash: feeTx.hash,
     });
-    const feeReceipt = await feeTx.wait();
+    const feeReceipt = await waitWithRetry(feeTx, fromChain);
     if (!feeReceipt) throw new Error("Fee transaction was not confirmed. Please try again.");
     feeTxHash = feeReceipt.hash;
   }
@@ -558,11 +568,7 @@ async function burnWithManualFee(
   //   destinationCaller = bytes32(0) → anyone may relay
   //   maxFee            = 0          → no premium for fast finality
   //   minFinalityThreshold = 2000    → finalized (matches on-chain default)
-  // On chains where eth_estimateGas is broken (e.g. Arc Testnet), bypass it with a hard-coded gasLimit.
   const finalityThreshold = fromChain.minFinalityThreshold ?? 1000;
-  const depositOverrides = fromChain.gasLimitOverride
-    ? { gasLimit: fromChain.gasLimitOverride }
-    : {};
   const burnTx = isV2
     ? await tokenMessenger.depositForBurn(
         fee.bridgeAmount,
@@ -572,14 +578,14 @@ async function burnWithManualFee(
         ethers.ZeroHash,     // destinationCaller = 0 (anyone)
         0n,                  // maxFee = 0
         finalityThreshold,   // per-chain: Arc=2000 (finalized), others=1000 (safe)
-        depositOverrides
+        writeOverrides
       )
     : await tokenMessenger.depositForBurn(
         fee.bridgeAmount,
         toChain.cctpDomain,
         mintRecipient32,
         fromChain.usdcAddress,
-        depositOverrides
+        writeOverrides
       );
 
   onStatusChange({
@@ -589,7 +595,7 @@ async function burnWithManualFee(
     burnTxHash: burnTx.hash,
   });
 
-  const burnReceipt = await burnTx.wait();
+  const burnReceipt = await waitWithRetry(burnTx, fromChain);
   if (!burnReceipt) {
     throw new Error("Burn transaction was not confirmed. Please check the explorer and try again.");
   }
