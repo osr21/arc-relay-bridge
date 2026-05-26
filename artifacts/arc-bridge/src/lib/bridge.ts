@@ -84,22 +84,45 @@ export async function getWalletChainId(): Promise<number> {
 
 export async function switchToChain(chain: ChainConfig): Promise<void> {
   if (!window.ethereum) throw new Error("No wallet detected.");
-  // wallet_switchEthereumChain fails silently for custom networks (e.g. Arc Testnet) in MetaMask.
-  // wallet_addEthereumChain is the correct method — it adds the network if missing AND switches
-  // to it if already present, making it safe to call unconditionally. See arc-node#89.
+
   const explorerUrls = chain.explorerUrl ? [chain.explorerUrl] : [];
-  await window.ethereum.request({
-    method: "wallet_addEthereumChain",
-    params: [
-      {
-        chainId: chain.hexId,
-        chainName: chain.name,
-        nativeCurrency: chain.nativeCurrency,
-        rpcUrls: [chain.rpcUrl],
-        ...(explorerUrls.length > 0 && { blockExplorerUrls: explorerUrls }),
-      },
-    ],
-  });
+
+  const addChain = () =>
+    window.ethereum!.request({
+      method: "wallet_addEthereumChain",
+      params: [
+        {
+          chainId: chain.hexId,
+          chainName: chain.name,
+          nativeCurrency: chain.nativeCurrency,
+          rpcUrls: [chain.rpcUrl],
+          ...(explorerUrls.length > 0 && { blockExplorerUrls: explorerUrls }),
+        },
+      ],
+    });
+
+  try {
+    // wallet_switchEthereumChain works for built-in chains (Sepolia, Base, Fuji).
+    // For custom networks like Arc Testnet it may fail with 4902, or with a non-standard
+    // error, or silently return without actually switching. See arc-node#89.
+    await window.ethereum.request({
+      method: "wallet_switchEthereumChain",
+      params: [{ chainId: chain.hexId }],
+    });
+
+    // Verify the switch actually took effect — Arc Testnet can return success without switching.
+    const current = await getWalletChainId();
+    if (current !== chain.id) {
+      await addChain();
+    }
+  } catch (err: unknown) {
+    const code = (err as { code?: number })?.code;
+    if (code === 4001) throw err; // User rejected — propagate immediately
+    // Any other error (4902 = unknown chain, or Arc's non-standard failures):
+    // fall through to wallet_addEthereumChain, which adds the network if missing
+    // and switches to it if already present. See arc-node#89.
+    await addChain();
+  }
 }
 
 /** Normalise any thrown error into a clean, user-facing message. */
