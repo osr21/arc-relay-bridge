@@ -68,7 +68,10 @@ export const CHAINS: Record<string, ChainConfig> = {
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     cctpVersion: 2,
-    minFinalityThreshold: 1000,
+    // 0 = attest after any block inclusion (no finality wait).
+    // Safe for testnet — Sepolia reorg risk is negligible and speed matters more.
+    // On mainnet this should be 1000 (safe) or 2000 (finalized).
+    minFinalityThreshold: 0,
     logoColor: "#627EEA",
   },
   BASE_SEPOLIA: {
@@ -88,7 +91,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     cctpVersion: 2,
-    minFinalityThreshold: 1000,
+    minFinalityThreshold: 0,
     logoColor: "#0052FF",
   },
   AVAX_FUJI: {
@@ -107,7 +110,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "AVAX", symbol: "AVAX", decimals: 18 },
     cctpVersion: 2,
-    minFinalityThreshold: 1000,
+    minFinalityThreshold: 0,
     logoColor: "#E84142",
   },
 };

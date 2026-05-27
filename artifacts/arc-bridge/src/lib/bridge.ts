@@ -450,13 +450,15 @@ async function pollAttestation(
       : "Burn confirmed. Waiting for Circle attestation (this can take a few minutes on testnet)…"
   );
 
-  // 240 attempts × 5 s = 20 minutes total. First attempt is immediate.
-  for (let i = 0; i < 240; i++) {
-    if (i > 0) await new Promise((r) => setTimeout(r, 5000));
+  // 600 attempts × 2 s = 20 minutes total. First attempt is immediate.
+  const POLL_MS = 2000;
+  const MAX_ATTEMPTS = 600;
+  for (let i = 0; i < MAX_ATTEMPTS; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, POLL_MS));
 
-    const attempt = `${i + 1}/240`;
-    const elapsed = Math.floor(((i + 1) * 5) / 60);
-    const elapsedStr = elapsed > 0 ? ` · ${elapsed}m` : "";
+    const attempt = `${i + 1}/${MAX_ATTEMPTS}`;
+    const elapsedSec = (i + 1) * (POLL_MS / 1000);
+    const elapsedStr = elapsedSec >= 60 ? ` · ${Math.floor(elapsedSec / 60)}m` : elapsedSec >= 10 ? ` · ${elapsedSec}s` : "";
 
     // ── Path 1: message-hash endpoint (/v1/attestations/{hash}) ────────────
     // Returns a signed attestation once Circle has confirmed the message.
@@ -492,9 +494,9 @@ async function pollAttestation(
   }
 
   throw new Error(
-    `Attestation timed out after 20 minutes. Your funds are safe — the burn is confirmed.\n` +
+    `Attestation timed out after 20 minutes. Your funds are safe — the burn is confirmed on-chain.\n` +
     `Burn tx: ${burnTxHash}\n` +
-    `You can manually complete the mint later using the CCTP relayer at https://developers.circle.com/stablecoins/cctp-getting-started`
+    `You can resume the mint from the bridge UI or manually at https://developers.circle.com/stablecoins/cctp-getting-started`
   );
 }
 
