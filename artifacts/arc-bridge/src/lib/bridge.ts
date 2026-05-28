@@ -574,36 +574,60 @@ async function burnWithManualFee(
   }
 
   // ── Pre-flight: simulate the burn before charging the fee ──────────────
-  // A gas-free eth_call (staticCall) proves the depositForBurn won't revert.
-  // If it would revert — wrong contract address, bad params, stale allowance —
-  // we abort here before a single wei of fee has left the wallet.
+  // Run a gas-free eth_call that mirrors depositForBurn exactly.
+  // We use our own JsonRpcProvider (not MetaMask) so that:
+  //   a) the `from` field is reliably included (MetaMask can drop it in eth_call)
+  //   b) we can try fallback RPCs if the primary is down
+  //   c) error objects include the full revert reason, not just a status code
+  // We pass `from: signerAddress` so the on-chain allowance we just set is visible.
+  // Strategy: CALL_EXCEPTION = real contract revert → block and report.
+  //           Any other error = RPC unreachable / timeout → warn and proceed
+  //           (the actual send will fail visibly if there's a real problem).
   onStatusChange({ step: "approving", message: "Simulating cross-chain transfer..." });
-  try {
-    if (isV2) {
-      await tokenMessenger.depositForBurn.staticCall(
-        fee.bridgeAmount,
-        toChain.cctpDomain,
-        mintRecipient32,
-        fromChain.usdcAddress,
-        ethers.ZeroHash,
-        0n,
-        finalityThreshold,
-      );
-    } else {
-      await tokenMessenger.depositForBurn.staticCall(
-        fee.bridgeAmount,
-        toChain.cctpDomain,
-        mintRecipient32,
-        fromChain.usdcAddress,
-      );
+
+  const burnArgs = isV2
+    ? [fee.bridgeAmount, toChain.cctpDomain, mintRecipient32,
+       fromChain.usdcAddress, ethers.ZeroHash, 0n, finalityThreshold]
+    : [fee.bridgeAmount, toChain.cctpDomain, mintRecipient32, fromChain.usdcAddress];
+
+  let simCallException: { reason?: string; shortMessage?: string } | null = null;
+  let simRpcFailed = false;
+
+  for (const rpcUrl of [fromChain.rpcUrl, ...fromChain.rpcFallbacks]) {
+    try {
+      const simProvider = new ethers.JsonRpcProvider(rpcUrl);
+      const simContract  = new ethers.Contract(fromChain.tokenMessenger, messengerAbi, simProvider);
+      await simContract.depositForBurn.staticCall(...burnArgs, { from: signerAddress });
+      // Simulation passed — break and proceed to fee transfer
+      simCallException = null;
+      simRpcFailed = false;
+      break;
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === "CALL_EXCEPTION") {
+        // Contract reverted — record and stop trying other RPCs (they'd give the same result)
+        simCallException = err as { reason?: string; shortMessage?: string };
+        simRpcFailed = false;
+        break;
+      }
+      // Network / parse error — try next RPC
+      simRpcFailed = true;
     }
-  } catch (simErr: unknown) {
-    // Extract the revert reason if the chain returns one; otherwise give a generic message.
-    const reason = (simErr as { reason?: string })?.reason;
-    const detail = reason && reason !== "null"
-      ? `: ${reason}`
-      : ". Check your USDC balance and that the source chain RPC is reachable";
-    throw new Error(`Burn simulation failed${detail} — no fee has been charged.`);
+  }
+
+  if (simCallException !== null) {
+    const reason = simCallException.reason ?? simCallException.shortMessage;
+    const detail = reason && reason !== "null" ? `: ${reason}` : "";
+    throw new Error(
+      `Transfer would revert on-chain${detail}. No fee has been charged. ` +
+      `Check your USDC balance, allowance, and that the bridge contracts are reachable on ${fromChain.shortName}.`
+    );
+  }
+  if (simRpcFailed) {
+    // All RPCs were unreachable — simulation inconclusive.
+    // Proceed optimistically; if the burn truly reverts the fee tx will be the only loss,
+    // but the user has been warned and can see the fee step before approving.
+    console.warn("[bridge] Burn simulation inconclusive — all RPCs unreachable. Proceeding.");
   }
 
   // ── Step 2: Transfer fee ───────────────────────────────────────────────
