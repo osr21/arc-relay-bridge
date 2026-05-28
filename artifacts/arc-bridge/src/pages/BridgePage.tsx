@@ -49,6 +49,7 @@ export default function BridgePage() {
   const currentStepRef  = useRef<ActiveStep | null>(null);
   const lastBurnTxRef   = useRef<string | undefined>(undefined);
   const lastFeeTxRef    = useRef<string | undefined>(undefined);
+  const lastMintTxRef   = useRef<string | undefined>(undefined);
 
   function handleWalletConnect(addr: string, chainId: number) {
     setWalletAddress(addr);
@@ -153,8 +154,9 @@ export default function BridgePage() {
     try {
       await executeBridge(fromChain, toChain, amount, effectiveRecipient, (status) => {
         setBridgeStatus(status);
-        if (status.burnTxHash) lastBurnTxRef.current = status.burnTxHash;
-        if (status.feeTxHash)  lastFeeTxRef.current  = status.feeTxHash;
+        if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
+        if (status.feeTxHash)  lastFeeTxRef.current   = status.feeTxHash;
+        if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
         if (
           status.step === "approving"  ||
           status.step === "collecting" ||
@@ -188,6 +190,7 @@ export default function BridgePage() {
         failedAtStep: currentStepRef.current ?? undefined,
         feeTxHash:    lastFeeTxRef.current,
         burnTxHash:   lastBurnTxRef.current,
+        mintTxHash:   lastMintTxRef.current,
       });
     }
   }
@@ -204,6 +207,7 @@ export default function BridgePage() {
     currentStepRef.current = null;
     lastBurnTxRef.current  = resumeSession.burnTxHash;
     lastFeeTxRef.current   = resumeSession.feeTxHash;
+    lastMintTxRef.current  = undefined;
 
     try {
       await resumeBridge(
@@ -213,7 +217,8 @@ export default function BridgePage() {
         resumeSession.feeTxHash,
         (status) => {
           setBridgeStatus(status);
-          if (status.burnTxHash) lastBurnTxRef.current = status.burnTxHash;
+          if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
+          if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
           if (
             status.step === "attesting" || status.step === "minting"
           ) currentStepRef.current = status.step;
@@ -229,6 +234,7 @@ export default function BridgePage() {
         failedAtStep: currentStepRef.current ?? undefined,
         feeTxHash:    lastFeeTxRef.current,
         burnTxHash:   lastBurnTxRef.current,
+        mintTxHash:   lastMintTxRef.current,
       });
     }
   }
@@ -237,6 +243,9 @@ export default function BridgePage() {
     setBridgeStatus({ step: "idle", message: "" });
     setAmount("");
     currentStepRef.current = null;
+    lastBurnTxRef.current  = undefined;
+    lastFeeTxRef.current   = undefined;
+    lastMintTxRef.current  = undefined;
     clearSession();
   }
 

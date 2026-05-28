@@ -30,9 +30,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Attestation polling hits 2 req/2s = 60 req/min per active bridge.
+// Allow 200/min to comfortably support a few concurrent bridges per IP.
 const attestLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 30,
+  max: 200,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests — please wait a moment and try again." },

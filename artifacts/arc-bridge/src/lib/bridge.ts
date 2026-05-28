@@ -264,6 +264,9 @@ function addressToBytes32(address: string): string {
 function validateAmount(amount: string): bigint {
   if (!amount || amount.trim() === "") throw new Error("Please enter an amount.");
   const trimmed = amount.trim();
+  // Reject scientific notation (e.g. "1e6") — ethers.parseUnits doesn't support it
+  // and parseFloat would silently accept it while making the button appear enabled.
+  if (/e/i.test(trimmed)) throw new Error("Please enter a plain decimal number (e.g. 1.50).");
   const parts   = trimmed.split(".");
   if (parts[1] && parts[1].length > 6) {
     throw new Error("Amount cannot have more than 6 decimal places (USDC has 6 decimals).");

@@ -35,7 +35,15 @@ export function loadSession(): BridgeSession | null {
       !/^0x[0-9a-fA-F]{64}$/.test(session.burnTxHash) ||
       typeof session.fromChainId !== "number" ||
       typeof session.toChainId !== "number" ||
-      typeof session.savedAt !== "number"
+      typeof session.savedAt !== "number" ||
+      // amount must be a plain decimal string (no scientific notation, no injection)
+      typeof session.amount !== "string" ||
+      !/^\d+(\.\d{1,6})?$/.test(session.amount.trim()) ||
+      // messageBytes, if present, must be a 0x-prefixed hex string of reasonable length
+      (session.messageBytes !== undefined && (
+        typeof session.messageBytes !== "string" ||
+        !/^0x[0-9a-fA-F]{2,2048}$/.test(session.messageBytes)
+      ))
     ) {
       clearSession();
       return null;
