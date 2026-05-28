@@ -521,7 +521,7 @@ async function getBumpedGasPrice(signer: ethers.Signer): Promise<bigint | undefi
   }
 }
 
-// ── Burn path: approve → transfer fee → depositForBurn ────────────────────
+// ── Burn path: approve → simulate → transfer fee → depositForBurn ─────────
 
 async function burnWithManualFee(
   fromChain: ChainConfig,
@@ -532,9 +532,15 @@ async function burnWithManualFee(
   signerAddress: string,
   onStatusChange: (status: BridgeStatus) => void
 ): Promise<{ burnTxHash: string; feeTxHash?: string; messageBytes?: string }> {
-  const fee           = calculateFee(grossAmountInUnits);
+  const fee             = calculateFee(grossAmountInUnits);
   const mintRecipient32 = addressToBytes32(mintRecipient);
-  const usdc          = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
+  const usdc            = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
+
+  // Set up TokenMessenger early so we can static-call it before the fee transfer.
+  const isV2           = fromChain.cctpVersion === 2;
+  const messengerAbi   = isV2 ? TOKEN_MESSENGER_V2_ABI : TOKEN_MESSENGER_ABI;
+  const tokenMessenger = new ethers.Contract(fromChain.tokenMessenger, messengerAbi, signer);
+  const finalityThreshold = fromChain.minFinalityThreshold ?? 1000;
 
   // ── Step 1: Approve TokenMessenger for bridge amount only ──────────────
   onStatusChange({ step: "approving", message: "Checking USDC allowance..." });
@@ -567,6 +573,39 @@ async function burnWithManualFee(
     onStatusChange({ step: "approving", message: "Allowance sufficient, skipping approval." });
   }
 
+  // ── Pre-flight: simulate the burn before charging the fee ──────────────
+  // A gas-free eth_call (staticCall) proves the depositForBurn won't revert.
+  // If it would revert — wrong contract address, bad params, stale allowance —
+  // we abort here before a single wei of fee has left the wallet.
+  onStatusChange({ step: "approving", message: "Simulating cross-chain transfer..." });
+  try {
+    if (isV2) {
+      await tokenMessenger.depositForBurn.staticCall(
+        fee.bridgeAmount,
+        toChain.cctpDomain,
+        mintRecipient32,
+        fromChain.usdcAddress,
+        ethers.ZeroHash,
+        0n,
+        finalityThreshold,
+      );
+    } else {
+      await tokenMessenger.depositForBurn.staticCall(
+        fee.bridgeAmount,
+        toChain.cctpDomain,
+        mintRecipient32,
+        fromChain.usdcAddress,
+      );
+    }
+  } catch (simErr: unknown) {
+    // Extract the revert reason if the chain returns one; otherwise give a generic message.
+    const reason = (simErr as { reason?: string })?.reason;
+    const detail = reason && reason !== "null"
+      ? `: ${reason}`
+      : ". Check your USDC balance and that the source chain RPC is reachable";
+    throw new Error(`Burn simulation failed${detail} — no fee has been charged.`);
+  }
+
   // ── Step 2: Transfer fee ───────────────────────────────────────────────
   let feeTxHash: string | undefined;
   if (fee.active) {
@@ -588,15 +627,10 @@ async function burnWithManualFee(
   // ── Step 3: depositForBurn ─────────────────────────────────────────────
   onStatusChange({ step: "burning", message: "Initiating cross-chain transfer...", feeTxHash });
 
-  const isV2 = fromChain.cctpVersion === 2;
-  const messengerAbi = isV2 ? TOKEN_MESSENGER_V2_ABI : TOKEN_MESSENGER_ABI;
-  const tokenMessenger = new ethers.Contract(fromChain.tokenMessenger, messengerAbi, signer);
-
   // CCTP V2 (Arc Testnet) requires three extra parameters:
   //   destinationCaller = bytes32(0) → anyone may relay
   //   maxFee            = 0          → no premium for fast finality
-  //   minFinalityThreshold = 2000    → finalized (matches on-chain default)
-  const finalityThreshold = fromChain.minFinalityThreshold ?? 1000;
+  //   minFinalityThreshold           → per-chain setting
   const burnTx = isV2
     ? await tokenMessenger.depositForBurn(
         fee.bridgeAmount,
@@ -605,7 +639,7 @@ async function burnWithManualFee(
         fromChain.usdcAddress,
         ethers.ZeroHash,     // destinationCaller = 0 (anyone)
         0n,                  // maxFee = 0
-        finalityThreshold,   // per-chain: Arc=2000 (finalized), others=1000 (safe)
+        finalityThreshold,
         writeOverrides
       )
     : await tokenMessenger.depositForBurn(
