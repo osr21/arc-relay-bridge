@@ -26,6 +26,12 @@ export interface ChainConfig {
    * When set, ethers.js skips estimateGas and uses this value directly.
    */
   gasLimitOverride?: bigint;
+  /**
+   * GasRelayer contract address on this chain.
+   * When set, users can enable Gas Relay mode: burn with mintRecipient = GasRelayer,
+   * then the relay API mints USDC on their behalf (no destination-chain gas needed).
+   */
+  gasRelayerAddress?: string;
   logoColor: string;
 }
 
@@ -49,6 +55,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     cctpVersion: 2,
     minFinalityThreshold: 2000,
     gasLimitOverride: 600000n,
+    gasRelayerAddress: "0x837D9a19C07bb7B4E95071dC0BaED72D4dE04ea1",
     logoColor: "#354457",
   },
   ETH_SEPOLIA: {
@@ -68,10 +75,8 @@ export const CHAINS: Record<string, ChainConfig> = {
     messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     cctpVersion: 2,
-    // 0 = attest after any block inclusion (no finality wait).
-    // Safe for testnet — Sepolia reorg risk is negligible and speed matters more.
-    // On mainnet this should be 1000 (safe) or 2000 (finalized).
     minFinalityThreshold: 0,
+    gasRelayerAddress: "0x5E87F210043D8457caCAd0F0c9aB70a99497Eec9",
     logoColor: "#627EEA",
   },
   BASE_SEPOLIA: {
@@ -92,6 +97,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     cctpVersion: 2,
     minFinalityThreshold: 0,
+    gasRelayerAddress: "0x64D160b7E91e78e52dFc0e8829640E32A919164C",
     logoColor: "#0052FF",
   },
   AVAX_FUJI: {
@@ -111,6 +117,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     nativeCurrency: { name: "AVAX", symbol: "AVAX", decimals: 18 },
     cctpVersion: 2,
     minFinalityThreshold: 0,
+    gasRelayerAddress: "0x6F80056564491425273A6a481EcC5DAea9D57f23",
     logoColor: "#E84142",
   },
 };

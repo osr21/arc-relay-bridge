@@ -692,12 +692,49 @@ async function burnWithManualFee(
 
 // ── Main entry point ────────────────────────────────────────────────────────
 
+// ── Gas Relay API ─────────────────────────────────────────────────────────────
+
+/** Flat relay fee this UI expects — must match GasRelayer.relayFee() on-chain (1 USDC). */
+export const GAS_RELAY_FEE_UNITS = 1_000_000n;
+
+/**
+ * Call the /api/relay endpoint to have the server submit GasRelayer.relay() on the
+ * destination chain.  The user burned USDC with mintRecipient = GasRelayer contract,
+ * so the contract mints and forwards (amount - relayFee) to `recipient`.
+ * Returns the relay transaction hash.
+ */
+async function callGasRelayApi(
+  toChain: ChainConfig,
+  message: string,
+  attestation: string,
+  recipient: string,
+  maxFee: bigint,
+): Promise<string> {
+  const resp = await fetch("/api/relay", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      message,
+      attestation,
+      recipient,
+      destChainId: toChain.id,
+      maxFee: maxFee.toString(),
+    }),
+  });
+  const data = await resp.json().catch(() => ({})) as { txHash?: string; error?: string };
+  if (!resp.ok || !data.txHash) {
+    throw new Error(data.error ?? `Gas relay request failed (HTTP ${resp.status})`);
+  }
+  return data.txHash;
+}
+
 export async function executeBridge(
   fromChain: ChainConfig,
   toChain: ChainConfig,
   amount: string,
   recipientAddress: string,
-  onStatusChange: (status: BridgeStatus) => void
+  onStatusChange: (status: BridgeStatus) => void,
+  options?: { useGasRelay?: boolean }
 ): Promise<void> {
   if (fromChain.id === toChain.id) {
     throw new Error("Source and destination chains must be different.");
@@ -732,8 +769,13 @@ export async function executeBridge(
     );
   }
 
+  const useGasRelay = !!(options?.useGasRelay && toChain.gasRelayerAddress);
+  // When relaying, the CCTP mintRecipient is the GasRelayer contract on the destination chain.
+  // The GasRelayer then mints USDC to itself and forwards (amount - relayFee) to the user.
+  const mintRecipientForBurn = useGasRelay ? toChain.gasRelayerAddress! : recipientAddress;
+
   const result = await burnWithManualFee(
-    fromChain, toChain, grossAmountInUnits, recipientAddress,
+    fromChain, toChain, grossAmountInUnits, mintRecipientForBurn,
     signer, signerAddress, onStatusChange
   );
   const burnTxHash   = result.burnTxHash;
@@ -758,67 +800,117 @@ export async function executeBridge(
     (msg) => onStatusChange({ step: "attesting", message: msg, feeTxHash, burnTxHash, messageBytes })
   );
 
-  // ── Switch + Mint ──────────────────────────────────────────────────────
-  onStatusChange({
-    step: "minting",
-    message: `Switching to ${toChain.name} to mint USDC...`,
-    feeTxHash,
-    burnTxHash,
-  });
-
-  await switchToChain(toChain);
-  await waitForChainSwitch(toChain.id);
-
-  const destProvider = await getProvider();
-  const destSigner   = await destProvider.getSigner();
-
-  // Nonce replay check — message may have been minted in a previous attempt
-  const alreadyMinted = await checkNonceUsed(attestationResult.message, toChain, destSigner);
-  if (alreadyMinted) {
-    const receivedAmount = formatUsdc(fee.bridgeAmount);
+  if (useGasRelay) {
+    // ── Gas Relay path: no wallet switch, server mints on behalf of user ──────
     onStatusChange({
-      step: "done",
-      message: `Already bridged! ${receivedAmount} USDC is on ${toChain.name} (message was previously received).`,
+      step: "minting",
+      message: "Requesting gasless relay — server will mint USDC on your behalf...",
       feeTxHash,
       burnTxHash,
     });
-    return;
+
+    const relayTxHash = await callGasRelayApi(
+      toChain,
+      attestationResult.message,
+      attestationResult.attestation,
+      recipientAddress,
+      GAS_RELAY_FEE_UNITS * 2n,   // maxFee = 2× expected, guards against sudden fee bumps
+    );
+
+    onStatusChange({
+      step: "minting",
+      message: "Relay submitted — waiting for confirmation on destination chain...",
+      feeTxHash,
+      burnTxHash,
+      mintTxHash: relayTxHash,
+    });
+
+    // Poll for the relay tx receipt on the destination chain
+    const destProvider = new ethers.JsonRpcProvider(toChain.rpcUrl);
+    let relayReceipt: ethers.TransactionReceipt | null = null;
+    for (let i = 0; i < 60; i++) {
+      relayReceipt = await destProvider.getTransactionReceipt(relayTxHash);
+      if (relayReceipt) break;
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+    if (!relayReceipt) {
+      throw new Error(
+        `Relay transaction submitted (${relayTxHash}) but not yet confirmed. ` +
+        `Check ${toChain.explorerUrl}/tx/${relayTxHash} — your USDC will arrive once it confirms.`
+      );
+    }
+
+    const netAmount = formatUsdc(fee.bridgeAmount - GAS_RELAY_FEE_UNITS);
+    onStatusChange({
+      step: "done",
+      message: `Relay complete! ${netAmount} USDC arrived on ${toChain.name} (1 USDC relay fee deducted).`,
+      feeTxHash,
+      burnTxHash,
+      mintTxHash: relayReceipt.hash,
+    });
+
+  } else {
+    // ── Standard path: user switches chain + calls receiveMessage ────────────
+    onStatusChange({
+      step: "minting",
+      message: `Switching to ${toChain.name} to mint USDC...`,
+      feeTxHash,
+      burnTxHash,
+    });
+
+    await switchToChain(toChain);
+    await waitForChainSwitch(toChain.id);
+
+    const destProvider = await getProvider();
+    const destSigner   = await destProvider.getSigner();
+
+    // Nonce replay check — message may have been minted in a previous attempt
+    const alreadyMinted = await checkNonceUsed(attestationResult.message, toChain, destSigner);
+    if (alreadyMinted) {
+      const receivedAmount = formatUsdc(fee.bridgeAmount);
+      onStatusChange({
+        step: "done",
+        message: `Already bridged! ${receivedAmount} USDC is on ${toChain.name} (message was previously received).`,
+        feeTxHash,
+        burnTxHash,
+      });
+      return;
+    }
+
+    const messageTransmitter = new ethers.Contract(
+      toChain.messageTransmitter,
+      MESSAGE_TRANSMITTER_ABI,
+      destSigner
+    );
+
+    onStatusChange({ step: "minting", message: "Minting USDC on destination chain...", feeTxHash, burnTxHash });
+
+    const mintOverrides = toChain.gasLimitOverride ? { gasLimit: toChain.gasLimitOverride } : {};
+    const mintTx = await messageTransmitter.receiveMessage(
+      attestationResult.message,
+      attestationResult.attestation,
+      mintOverrides
+    );
+
+    onStatusChange({
+      step: "minting",
+      message: "Mint transaction submitted, waiting for confirmation...",
+      feeTxHash,
+      burnTxHash,
+      mintTxHash: mintTx.hash,
+    });
+
+    const mintReceipt = await waitWithRetry(mintTx, toChain);
+
+    const receivedAmount = formatUsdc(fee.bridgeAmount);
+    onStatusChange({
+      step: "done",
+      message: `Bridge complete! ${receivedAmount} USDC has arrived on ${toChain.name}.`,
+      feeTxHash,
+      burnTxHash,
+      mintTxHash: mintReceipt.hash,
+    });
   }
-
-  const messageTransmitter = new ethers.Contract(
-    toChain.messageTransmitter,
-    MESSAGE_TRANSMITTER_ABI,
-    destSigner
-  );
-
-  onStatusChange({ step: "minting", message: "Minting USDC on destination chain...", feeTxHash, burnTxHash });
-
-  // Apply gas override on chains where eth_estimateGas is unreliable (e.g. Arc Testnet as destination).
-  const mintOverrides = toChain.gasLimitOverride ? { gasLimit: toChain.gasLimitOverride } : {};
-  const mintTx = await messageTransmitter.receiveMessage(
-    attestationResult.message,
-    attestationResult.attestation,
-    mintOverrides
-  );
-
-  onStatusChange({
-    step: "minting",
-    message: "Mint transaction submitted, waiting for confirmation...",
-    feeTxHash,
-    burnTxHash,
-    mintTxHash: mintTx.hash,
-  });
-
-  const mintReceipt = await waitWithRetry(mintTx, toChain);
-
-  const receivedAmount = formatUsdc(fee.bridgeAmount);
-  onStatusChange({
-    step: "done",
-    message: `Bridge complete! ${receivedAmount} USDC has arrived on ${toChain.name}.`,
-    feeTxHash,
-    burnTxHash,
-    mintTxHash: mintReceipt.hash,
-  });
 }
 
 // ── Resume (attestation + mint only) ─────────────────────────────────────────

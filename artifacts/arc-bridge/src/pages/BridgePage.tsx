@@ -12,6 +12,7 @@ import {
   resumeBridge,
   friendlyError,
   addUsdcToWallet,
+  GAS_RELAY_FEE_UNITS,
 } from "@/lib/bridge";
 import { calculateFee, formatUsdc, FEE_BPS, isFeeActive } from "@/lib/config";
 import { BridgeSession, saveSession, loadSession, clearSession } from "@/lib/session";
@@ -33,6 +34,7 @@ export default function BridgePage() {
   const [amount, setAmount]       = useState("");
   const [recipient, setRecipient] = useState("");
   const [useCustomRecipient, setUseCustomRecipient] = useState(false);
+  const [useGasRelay, setUseGasRelay] = useState(false);
 
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletChainId, setWalletChainId] = useState<number | null>(null);
@@ -179,7 +181,7 @@ export default function BridgePage() {
             savedAt:     Date.now(),
           });
         }
-      });
+      }, { useGasRelay: useGasRelay && !!toChain.gasRelayerAddress });
       clearSession();
       await refreshBalances();
     } catch (err: unknown) {
@@ -526,6 +528,38 @@ export default function BridgePage() {
                 )}
               </div>
 
+              {/* ── Gas Relay toggle ── */}
+              {toChain.gasRelayerAddress && (
+                <div className="flex items-center justify-between px-4 py-3 bg-slate-800/30 rounded-xl border border-slate-700/40">
+                  <div className="flex items-start gap-2">
+                    <Zap className="w-3.5 h-3.5 text-[#4F9CF9] mt-0.5 flex-shrink-0" />
+                    <div>
+                      <p className="text-xs text-slate-300 font-medium">Gasless relay</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Skip wallet switch — 1 USDC relay fee
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setUseGasRelay(!useGasRelay)}
+                    disabled={isProcessing}
+                    className={cn(
+                      "relative w-9 h-5 rounded-full transition-colors duration-200 flex-shrink-0",
+                      useGasRelay ? "bg-[#4F9CF9]" : "bg-slate-700",
+                      isProcessing && "opacity-50 cursor-not-allowed"
+                    )}
+                    aria-checked={useGasRelay}
+                    role="switch"
+                    aria-label="Enable gasless relay"
+                  >
+                    <span className={cn(
+                      "absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200",
+                      useGasRelay && "translate-x-4"
+                    )} />
+                  </button>
+                </div>
+              )}
+
               {/* ── Fee & Bridge Summary ── */}
               {amountIsValid && !sameChain && feeBreakdown && (
                 <div className="px-4 py-3 bg-slate-800/40 rounded-xl border border-slate-700/40 space-y-2">
@@ -534,30 +568,39 @@ export default function BridgePage() {
                     <span className="text-white font-medium">{amount} USDC</span>
                   </div>
 
-                  {feeBreakdown.active ? (
-                    <>
-                      <div className="flex justify-between text-xs">
-                        <span className="flex items-center gap-1 text-slate-500">
-                          <Zap className="w-3 h-3 text-[#4F9CF9]" />
-                          Protocol fee ({FEE_BPS / 100}%)
-                        </span>
-                        <span className="text-slate-300 font-mono">
-                          −{formatUsdc(feeBreakdown.feeAmount)} USDC
-                        </span>
-                      </div>
-                      <div className="border-t border-slate-700/60 pt-2 flex justify-between text-xs">
-                        <span className="text-slate-500">You receive</span>
-                        <span className="text-emerald-400 font-semibold">
-                          {formatUsdc(feeBreakdown.bridgeAmount)} USDC
-                        </span>
-                      </div>
-                    </>
-                  ) : (
+                  {feeBreakdown.active && (
                     <div className="flex justify-between text-xs">
-                      <span className="text-slate-500">You receive</span>
-                      <span className="text-emerald-400 font-medium">{amount} USDC</span>
+                      <span className="flex items-center gap-1 text-slate-500">
+                        <Zap className="w-3 h-3 text-[#4F9CF9]" />
+                        Protocol fee ({FEE_BPS / 100}%)
+                      </span>
+                      <span className="text-slate-300 font-mono">
+                        −{formatUsdc(feeBreakdown.feeAmount)} USDC
+                      </span>
                     </div>
                   )}
+
+                  {useGasRelay && toChain.gasRelayerAddress && (
+                    <div className="flex justify-between text-xs">
+                      <span className="flex items-center gap-1 text-slate-500">
+                        <Zap className="w-3 h-3 text-purple-400" />
+                        Relay fee (gasless)
+                      </span>
+                      <span className="text-slate-300 font-mono">
+                        −{formatUsdc(GAS_RELAY_FEE_UNITS)} USDC
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="border-t border-slate-700/60 pt-2 flex justify-between text-xs">
+                    <span className="text-slate-500">You receive</span>
+                    <span className="text-emerald-400 font-semibold">
+                      {formatUsdc(
+                        feeBreakdown.bridgeAmount -
+                          (useGasRelay && toChain.gasRelayerAddress ? GAS_RELAY_FEE_UNITS : 0n)
+                      )} USDC
+                    </span>
+                  </div>
 
                   <div className="flex justify-between text-xs">
                     <span className="text-slate-500">Protocol</span>
@@ -573,6 +616,7 @@ export default function BridgePage() {
                     step={bridgeStatus.step}
                     failedAtStep={bridgeStatus.failedAtStep}
                     hasFee={feeEnabled}
+                    stepLabels={useGasRelay && toChain.gasRelayerAddress ? { minting: "Relay" } : undefined}
                   />
 
                   {/* Status message — special layout for attestation timeout */}
