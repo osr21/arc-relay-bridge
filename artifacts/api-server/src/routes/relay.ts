@@ -82,6 +82,46 @@ async function getProvider(chain: typeof CHAIN_CONFIGS[number]): Promise<ethers.
  *   { txHash, relayFee, chain }  on success
  *   { error }                    on failure
  */
+/**
+ * GET /api/relay/fee?chainId=<number>
+ *
+ * Returns the current relay fee for the specified destination chain,
+ * read live from the on-chain GasRelayer contract.
+ *
+ * Response: { chainId, relayFee, chain }
+ */
+router.get("/relay/fee", async (req, res) => {
+  const { chainId } = req.query;
+
+  if (!chainId || typeof chainId !== "string" || !/^\d+$/.test(chainId)) {
+    res.status(400).json({ error: "Missing or invalid chainId query parameter" });
+    return;
+  }
+
+  const id    = parseInt(chainId, 10);
+  const chain = CHAIN_CONFIGS[id];
+  if (!chain) {
+    res.status(400).json({ error: `Unsupported chainId: ${id}` });
+    return;
+  }
+
+  let provider: ethers.JsonRpcProvider;
+  try {
+    provider = await getProvider(chain);
+  } catch {
+    res.status(503).json({ error: `Cannot connect to ${chain.name} RPC` });
+    return;
+  }
+
+  try {
+    const contract = new ethers.Contract(chain.gasRelayerAddress, GAS_RELAYER_ABI, provider);
+    const fee      = await contract.relayFee() as bigint;
+    res.json({ chainId: id, relayFee: fee.toString(), chain: chain.name });
+  } catch {
+    res.status(503).json({ error: `Failed to read relay fee from ${chain.name}` });
+  }
+});
+
 router.post("/relay", async (req, res) => {
   const { message, attestation, recipient, destChainId, maxFee } = req.body ?? {};
 

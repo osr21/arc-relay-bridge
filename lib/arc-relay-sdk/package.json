@@ -1,0 +1,15 @@
+{
+  "name": "@workspace/arc-relay-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript SDK for the Arc Relay Bridge — chain configs, fee calculation, attestation polling, and gasless relay API client.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./chains": "./src/chains.ts",
+    "./fees": "./src/fees.ts",
+    "./attest": "./src/attest.ts",
+    "./relay": "./src/relay.ts",
+    "./types": "./src/types.ts"
+  }
+}
