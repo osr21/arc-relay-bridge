@@ -14,12 +14,14 @@
   - **4-step progress UI** — Approve → Fee → Burn → Attest → Mint/Relay
   - **Session recovery** — interrupted transfers resume automatically on reload
   - **Multi-chain** — Arc Testnet ↔ Ethereum Sepolia, Base Sepolia, Avalanche Fuji
+  - **Public REST API** — any dApp can use the relay, attestation proxy, and chain discovery endpoints
+  - **TypeScript SDK** — drop-in library for integrating the relay into your own dApp
 
   ---
 
   ## Supported Chains (Testnet)
 
-  | Chain | CCTP Domain | Chain ID | Min Finality Threshold |
+  | Chain | CCTP Domain | Chain ID | Min Finality |
   |---|---|---|---|
   | Arc Testnet | 26 | 5042002 | 2000 (finalized) |
   | Ethereum Sepolia | 0 | 11155111 | 1000 (safe) |
@@ -46,9 +48,7 @@
   | Base Sepolia | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
   | Avalanche Fuji | `0x5425890298aed601595a70AB815c96711a31Bc65` |
 
-  ### FeeRouter v2 (deployed 2025-05-23)
-
-  Collects the 0.3% protocol fee on each bridge. Immutable USDC/TokenMessenger references, reentrancy lock, zero-recipient checks.
+  ### FeeRouter v2
 
   | Chain | Address |
   |---|---|
@@ -57,9 +57,7 @@
   | Base Sepolia | `0x8d4B57eD464df10414Dde3ADC2E403a01ebc50d8` |
   | Avalanche Fuji | `0x64D160b7E91e78e52dFc0e8829640E32A919164C` |
 
-  ### GasRelayer (deployed 2025-05-29)
-
-  Enables gasless bridging. The user burns with `mintRecipient = GasRelayer`, the server calls `relay()`, and the contract mints USDC to itself then forwards `(amount − relayFee)` to the user wallet.
+  ### GasRelayer (gasless paymaster)
 
   | Chain | Address |
   |---|---|
@@ -72,51 +70,246 @@
 
   ---
 
+  ## REST API
+
+  Base URL: `https://arc-relay-bridge.replit.app`
+
+  All endpoints return JSON. CORS is open — any origin may call them.
+
+  ### GET /api/chains
+
+  Returns all supported chains with live relay fees read from the on-chain GasRelayer contracts.
+
+  ```bash
+  curl https://arc-relay-bridge.replit.app/api/chains
+  ```
+
+  ```json
+  {
+    "chains": [
+      {
+        "id": 5042002,
+        "name": "Arc Testnet",
+        "shortName": "Arc",
+        "cctpDomain": 26,
+        "usdcAddress": "0x3600000000000000000000000000000000000000",
+        "gasRelayerAddress": "0x837D9a19C07bb7B4E95071dC0BaED72D4dE04ea1",
+        "explorerUrl": "https://testnet.arcscan.app",
+        "relayFeeUnits": "1000000"
+      }
+    ]
+  }
+  ```
+
+  ---
+
+  ### GET /api/relay/fee?chainId=\<chainId\>
+
+  Returns the current relay fee for a single destination chain (live, from the contract).
+
+  ```bash
+  curl "https://arc-relay-bridge.replit.app/api/relay/fee?chainId=5042002"
+  # → { "chainId": 5042002, "relayFee": "1000000", "chain": "Arc Testnet" }
+  ```
+
+  ---
+
+  ### POST /api/relay
+
+  Submit a gasless CCTP relay. The server calls `GasRelayer.relay()` on-chain and returns the destination tx hash immediately.
+
+  The caller must have already burned USDC with `mintRecipient` set to the GasRelayer contract address on the destination chain.
+
+  **Request body:**
+
+  | Field | Type | Description |
+  |---|---|---|
+  | `message` | string | 0x-hex CCTP message bytes from the source burn event |
+  | `attestation` | string | 0x-hex Circle Iris attestation signature |
+  | `recipient` | string | User wallet address on the destination chain |
+  | `destChainId` | number | EVM chain ID of the destination chain |
+  | `maxFee` | string | Maximum relay fee accepted (USDC units, 6 decimals) |
+
+  ```bash
+  curl -X POST https://arc-relay-bridge.replit.app/api/relay \
+    -H "Content-Type: application/json" \
+    -d '{
+      "message":     "0x...",
+      "attestation": "0x...",
+      "recipient":   "0xYourWallet",
+      "destChainId": 5042002,
+      "maxFee":      "2000000"
+    }'
+  # → { "txHash": "0x...", "relayFee": "1000000", "chain": "Arc Testnet" }
+  ```
+
+  **Rate limits:** 20 req/min per IP for relay, 200/min for attestation, 60/min for chains.
+
+  ---
+
+  ### GET /api/attest?domain=\<domain\>&txHash=\<hash\>
+
+  Proxy to Circle Iris attestation API. Avoids CORS issues from browser dApps.
+
+  ```bash
+  curl "https://arc-relay-bridge.replit.app/api/attest?domain=0&txHash=0x..."
+  # → { "messages": [{ "attestation": "0x...", "message": "0x...", "status": "complete" }] }
+  ```
+
+  ---
+
+  ## TypeScript SDK
+
+  The `@workspace/arc-relay-sdk` package (in `lib/arc-relay-sdk/`) provides typed wrappers around all of the above. No ethers.js dependency — pure TypeScript and fetch.
+
+  ```ts
+  import {
+    CHAINS,
+    calculateFee,
+    parseUsdc,
+    formatUsdc,
+    pollAttestation,
+    callRelay,
+    getRelayFee,
+    getSupportedChains,
+  } from "@workspace/arc-relay-sdk";
+
+  // 1. Calculate fees
+  const gross = parseUsdc("10");                            // → 10_000_000n
+  const fee   = calculateFee(gross, true);                  // true = gasless relay
+  console.log("You receive:", formatUsdc(fee.netAmount));   // "8.97" (0.3% + 1 USDC)
+
+  // 2. Get live relay fee from chain
+  const liveRelayFee = await getRelayFee(
+    "https://arc-relay-bridge.replit.app",
+    5042002   // Arc Testnet
+  );
+
+  // 3. Poll for attestation after a burn
+  const attest = await pollAttestation(
+    "https://arc-relay-bridge.replit.app",
+    burnTxHash,
+    0,          // source CCTP domain (0 = Sepolia)
+    { onStatus: console.log }
+  );
+
+  // 4. Submit gasless relay
+  const result = await callRelay("https://arc-relay-bridge.replit.app", {
+    message:     attest.message,
+    attestation: attest.attestation,
+    recipient:   "0xYourWallet",
+    destChainId: 5042002,
+    maxFee:      (liveRelayFee * 2n).toString(),
+  });
+  console.log("Relay tx:", result.txHash);
+  ```
+
+  ### SDK exports
+
+  | Export | Description |
+  |---|---|
+  | `CHAINS`, `ALL_CHAINS` | Chain config objects for all 4 chains |
+  | `getChainById(id)` | Look up chain by EVM chain ID |
+  | `getChainByCctpDomain(domain)` | Look up chain by CCTP domain |
+  | `calculateFee(grossUnits, useRelay?)` | Full fee breakdown (protocolFee, relayFee, netAmount) |
+  | `formatUsdc(units)` | bigint → "1.5" string |
+  | `parseUsdc(str)` | "1.5" → 1_500_000n |
+  | `GAS_RELAY_FEE_UNITS` | Current flat relay fee constant (1_000_000n) |
+  | `pollAttestation(base, txHash, domain)` | Poll until Circle Iris attestation is ready |
+  | `callRelay(base, params)` | Submit a gasless relay request |
+  | `getRelayFee(base, chainId)` | Fetch live relay fee from contract |
+  | `getSupportedChains(base)` | Fetch all chain configs + live fees |
+
+  ---
+
+  ## GasRelayer as a Shared Paymaster
+
+  Any dApp on Arc Testnet can use the GasRelayer contracts as a paymaster for their CCTP burns — no contract deployment required.
+
+  ### Integration steps
+
+  1. **On the source chain**: call `TokenMessenger.depositForBurn` with:
+     ```solidity
+     mintRecipient = bytes32(uint256(uint160(gasRelayerAddress)));
+     // e.g. Arc GasRelayer: 0x837D9a19C07bb7B4E95071dC0BaED72D4dE04ea1
+     ```
+
+  2. **After the burn confirms**: poll for the Circle Iris attestation.
+
+  3. **Submit the relay**: POST to `/api/relay` with the message, attestation, your user's wallet as `recipient`, and a `maxFee`.
+
+  4. **Result**: the GasRelayer calls `receiveMessage`, receives the minted USDC, deducts 1 USDC, and forwards the rest to your user — no gas required on the destination chain.
+
+  ### Smart contract interface
+
+  See `contracts/interfaces/IGasRelayer.sol` for the full interface, and `contracts/examples/ComposableReceiver.sol` for an example of a dApp contract that receives bridged USDC and deposits it into a vault atomically.
+
+  ---
+
+  ## On-Chain Composability
+
+  For dApps that want to receive bridged USDC and run custom logic (swap, stake, deposit) in the same transaction:
+
+  ```solidity
+  // Your contract IS the CCTP mintRecipient.
+  // Use ComposableReceiver.sol as a starting point.
+
+  // Source chain: burn with mintRecipient = address(yourContract)
+  TokenMessenger(cctp).depositForBurn(
+    amount, destDomain,
+    bytes32(uint256(uint160(address(yourContract)))),
+    bytes32(0), 0, minFinalityThreshold
+  );
+
+  // Destination chain: relayer calls your contract after GasRelayer transfer
+  yourContract.processIncoming(userAddress);
+  // → deposits USDC into vault on behalf of user
+  ```
+
+  See `contracts/interfaces/` and `contracts/examples/` for full implementations.
+
+  ---
+
   ## Architecture
 
   ```
   User wallet (source chain)
     │
-    ├─ 1. Approve TokenMessenger for bridgeAmount
-    ├─ 2. Transfer 0.3% fee → FeeRouter (source chain)
+    ├─ 1. Approve TokenMessenger
+    ├─ 2. ERC-20 transfer 0.3% → FeeRouter
     └─ 3. depositForBurn(amount, destDomain, mintRecipient, ...)
                 │
-                │  Circle CCTP V2
+                │  Circle CCTP V2 + Iris attestation
                 ▼
           MessageTransmitter (destination chain)
 
   Standard path:
-    └─ 4a. User switches wallet to destination chain
-           receiveMessage(message, attestation)
-           → USDC minted directly to user wallet
+    └─ 4a. User wallet calls receiveMessage → USDC minted directly
 
   Gasless relay path:
-    └─ 4b. POST /api/relay  ←  server submits GasRelayer.relay()
-           → USDC minted to GasRelayer contract
-           → GasRelayer transfers (amount − 1 USDC) to user
-           → GasRelayer transfers 1 USDC to feeRecipient
+    └─ 4b. POST /api/relay
+           → GasRelayer.relay()
+           → receiveMessage (mints to GasRelayer)
+           → transfer(feeRecipient, 1 USDC)
+           → transfer(user wallet, net USDC)
            → user never needs destination-chain gas
+
+  Composable path:
+    └─ 4c. Your contract is the mintRecipient
+           → USDC arrives at your contract
+           → processIncoming() runs vault/swap/stake logic
   ```
-
-  ### Key design decisions
-
-  - **Frontend-only bridge logic** — all CCTP calls run client-side via ethers.js + MetaMask; no custodial server
-  - **CCTP V2 7-param `depositForBurn`** — selector `0x8e0250ee`; the V1 4-param variant will revert on these contracts
-  - **Arc USDC is 6 decimals** via ERC-20 interface (native 18-decimal representation is gas-only)
-  - **Per-chain `minFinalityThreshold`**: Arc = 2000 (finalized), all others = 1000 (safe, ~1-2 min attestation)
-  - **GasRelayer `maxFee` guard** — frontend passes 2× expected fee so sudden bumps never silently over-charge
-  - **Circle Iris sandbox API** for attestation polling; polls every 5 s up to 20 min
 
   ---
 
   ## Revenue
 
-  Each transfer generates two fee streams (both to `feeRecipient`):
-
-  | Fee | Where deducted | Amount |
+  | Fee | Where | Amount |
   |---|---|---|
-  | Protocol fee | Source chain (ERC-20 transfer before burn) | 0.3% of bridged amount |
-  | Relay fee | Destination chain (inside GasRelayer) | 1 USDC flat (gasless only) |
+  | Protocol fee | Source chain, before burn | 0.30% of bridged amount |
+  | Relay fee | Destination chain, inside GasRelayer | 1 USDC flat (gasless only) |
+
+  Both go to: `0xdb5019b8DfbccEF8906C39B16a4870082eAbBc4C`
 
   ---
 
@@ -129,6 +322,7 @@
   | Bridge protocol | Circle CCTP V2 |
   | Attestation | Circle Iris API (sandbox) |
   | API server | Express 5 + Node 24 + TypeScript |
+  | SDK | TypeScript, zero dependencies |
   | Monorepo | pnpm workspaces |
   | Smart contracts | Solidity 0.8.20 (solc) |
 
@@ -138,30 +332,42 @@
 
   ```
   artifacts/
-    arc-bridge/          # React + Vite frontend
+    arc-bridge/               # React + Vite bridge UI
       src/lib/
-        chains.ts        # Chain configs, CCTP domains, contract addresses, ABIs
-        bridge.ts        # Full CCTP bridge flow + gasless relay path
-        config.ts        # Fee configuration (FEE_BPS, FEE_RECIPIENT)
-      src/pages/
-        BridgePage.tsx   # Main bridge UI
-      src/components/
-        ChainSelector    # Chain picker
-        StepProgress     # 5-step progress bar (Approve→Fee→Burn→Attest→Mint/Relay)
-        WalletButton     # MetaMask connect/display
-        TxLink           # Explorer link per chain
+        chains.ts             # Chain configs, ABIs, contract addresses
+        bridge.ts             # CCTP flow + gasless relay path
+        config.ts             # Fee configuration
+      src/pages/BridgePage.tsx
+      src/components/         # ChainSelector, StepProgress, WalletButton, TxLink
 
-    api-server/          # Express API
+    api-server/               # Express API server
       src/routes/
-        attest.ts        # GET /api/attest — proxy to Circle Iris attestation
-        relay.ts         # POST /api/relay — submit GasRelayer.relay() on-chain
+        attest.ts             # GET /api/attest — Circle Iris proxy
+        relay.ts              # POST /api/relay, GET /api/relay/fee
+        chains.ts             # GET /api/chains
+
+  lib/
+    arc-relay-sdk/            # TypeScript SDK (zero dependencies)
+      src/
+        types.ts              # Chain, FeeBreakdown, AttestationResult, RelayResult
+        chains.ts             # CHAINS, getChainById, getChainByCctpDomain
+        fees.ts               # calculateFee, formatUsdc, parseUsdc
+        attest.ts             # pollAttestation
+        relay.ts              # callRelay, getRelayFee, getSupportedChains
+        index.ts              # re-exports everything
 
   contracts/
-    GasRelayer.sol       # Gasless relay paymaster contract
-    FeeRouter.sol        # Protocol fee collection contract
+    GasRelayer.sol            # Gasless relay paymaster
+    FeeRouter.sol             # Protocol fee collection
+    FeeRouter_v2.sol
+    interfaces/
+      IGasRelayer.sol         # Interface for external integrations
+      IFeeRouter.sol
+    examples/
+      ComposableReceiver.sol  # Example: receive USDC + run custom logic
 
   scripts/
-    src/deploy.ts        # Deploy FeeRouter + GasRelayer to all chains
+    src/deploy.ts             # Deploy all contracts to all chains
   ```
 
   ---
@@ -169,50 +375,49 @@
   ## Local Development
 
   ```bash
-  # Install dependencies
   pnpm install
 
-  # Run the frontend (reads PORT env)
+  # Frontend
   pnpm --filter @workspace/arc-bridge run dev
 
-  # Run the API server
+  # API server
   pnpm --filter @workspace/api-server run dev
 
   # Typecheck everything
   pnpm run typecheck
 
-  # Re-deploy contracts
+  # Redeploy contracts
   pnpm --filter @workspace/scripts run deploy
   ```
 
-  ### Required environment secrets
+  ### Environment secrets
 
   | Secret | Description |
   |---|---|
-  | `DEPLOYER_PRIVATE_KEY` | Wallet that owns and funds the GasRelayer contracts |
-  | `FEE_RECIPIENT` | Address that receives protocol fees (used at deploy time) |
-  | `VITE_FEE_RECIPIENT` | Same address exposed to the frontend for fee display |
-  | `SESSION_SECRET` | Express session signing key |
-
-  ---
-
-  ## Useful Links
-
-  - [Circle Faucet](https://faucet.circle.com) — get testnet USDC
-  - [Arc Docs](https://docs.arc.io) — Arc Testnet documentation
-  - [CCTP Docs](https://developers.circle.com/stablecoins/cctp-getting-started)
-  - [Arc Testnet Explorer](https://testnet.arcscan.app)
-  - [Sepolia Etherscan](https://sepolia.etherscan.io)
-  - [Base Sepolia Explorer](https://sepolia.basescan.org)
-  - [Fuji Snowtrace](https://testnet.snowtrace.io)
+  | `DEPLOYER_PRIVATE_KEY` | Owns and funds the GasRelayer contracts |
+  | `FEE_RECIPIENT` | Fee recipient address (used at deploy time) |
+  | `VITE_FEE_RECIPIENT` | Fee recipient exposed to the frontend |
+  | `SESSION_SECRET` | Express session key |
 
   ---
 
   ## Gotchas
 
-  - **All chains use CCTP V2** — always the 7-param `depositForBurn` (selector `0x8e0250ee`). The V1 4-param variant (`0x6fd3504e`) will `require(false)` on these contracts.
-  - Arc Testnet USDC is at a special system address `0x3600…0000` — same ERC-20 interface, just an unusual address
-  - Arc native tokens use 18 decimals for gas but ERC-20 USDC uses 6 — always go through the ERC-20 interface
-  - Sepolia RPC: use `https://ethereum-sepolia-rpc.publicnode.com` — `rpc.sepolia.org` is unreliable
-  - Arc Testnet explorer: `https://testnet.arcscan.app` — older URLs (`explorer.testnet.arc.network`, `explorer.arc.io`) are dead
+  - **CCTP V2 only** — always the 7-param `depositForBurn` (selector `0x8e0250ee`). V1 4-param will revert.
+  - Arc USDC at `0x3600…0000` uses 6 decimals via ERC-20, not 18.
+  - Sepolia RPC: use `https://ethereum-sepolia-rpc.publicnode.com` — `rpc.sepolia.org` is unreliable.
+  - Arc Testnet explorer: `https://testnet.arcscan.app` — older URLs are dead.
+  - `minFinalityThreshold`: Arc requires 2000 (finalized); all other chains use 1000 (safe).
+
+  ---
+
+  ## Links
+
+  - [Circle Faucet](https://faucet.circle.com) — get testnet USDC
+  - [Arc Docs](https://docs.arc.io)
+  - [CCTP Docs](https://developers.circle.com/stablecoins/cctp-getting-started)
+  - [Arc Testnet Explorer](https://testnet.arcscan.app)
+  - [Sepolia Etherscan](https://sepolia.etherscan.io)
+  - [Base Sepolia Explorer](https://sepolia.basescan.org)
+  - [Fuji Snowtrace](https://testnet.snowtrace.io)
   
