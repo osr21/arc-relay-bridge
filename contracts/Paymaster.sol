@@ -53,6 +53,9 @@ contract Paymaster {
     /// @dev Hard cap: 10 USDC per deductGas call.
     uint256 public constant MAX_DEDUCTION_PER_TX = 10_000_000;
 
+    /// @dev Hard cap on gasRate: 1 USDC per gas unit (prevents absurd rates from confusing UIs).
+    uint256 public constant MAX_GAS_RATE = 1_000_000;
+
     mapping(address => uint256) public balances;
 
     event Deposited(address indexed user, uint256 amount, uint256 newBalance);
@@ -186,6 +189,7 @@ contract Paymaster {
     }
 
     function setGasRate(uint256 newRate) external onlyOwner {
+        require(newRate <= MAX_GAS_RATE, "Paymaster: rate exceeds max");
         emit GasRateSet(gasRate, newRate);
         gasRate = newRate;
     }
@@ -210,11 +214,11 @@ contract Paymaster {
 
     /**
      * @notice Rescue ERC-20 tokens accidentally sent to this contract.
-     *         Note: rescuing USDC reduces the total available for user withdrawals —
-     *         only call this for genuinely stuck non-user funds.
+     *         Explicitly blocks rescue of the USDC token to protect user deposits.
      */
     function rescueTokens(address token, address to, uint256 amount) external onlyOwner {
-        require(to != address(0), "Paymaster: zero address");
+        require(to    != address(0), "Paymaster: zero address");
+        require(token != usdc,       "Paymaster: cannot rescue USDC deposits");
         require(IERC20(token).transfer(to, amount), "Paymaster: rescue failed");
     }
 }

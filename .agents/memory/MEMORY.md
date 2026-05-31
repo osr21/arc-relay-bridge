@@ -1,1 +1,2 @@
 - [YieldVault deployments](yield-vault-deployments.md) — deployed addresses for Arc/Base/Fuji; Sepolia needs more ETH to deploy
+- [Paymaster v2 deployment](paymaster-v2.md) — hardened contract addresses + key audit findings
