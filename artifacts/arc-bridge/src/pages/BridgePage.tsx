@@ -316,6 +316,10 @@ export default function BridgePage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <a href="/paymaster"
+            className="flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 font-medium transition-colors">
+            Paymaster ↗
+          </a>
           <a href="/yield"
             className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 font-medium transition-colors">
             Yield ↗
