@@ -578,6 +578,12 @@ export default function YieldPage() {
             >
               ← Bridge
             </a>
+            <a
+              href="/paymaster"
+              className="text-sm text-violet-400 hover:text-violet-300 transition-colors hidden sm:block"
+            >
+              Paymaster ↗
+            </a>
             <button
               onClick={() => void load(walletAddress ?? undefined)}
               disabled={refreshing}

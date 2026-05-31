@@ -55,6 +55,19 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 - Base Sepolia USDC: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - Fuji USDC: `0x5425890298aed601595a70AB815c96711a31Bc65`
 
+## Paymaster Addresses (deployed 2025-05-31, evmVersion paris)
+
+| Chain | Address |
+|---|---|
+| Arc Testnet | `0x3bffbbBE98D3FDD9E25A76ca5Fd5962A19cB19Eb` |
+| Ethereum Sepolia | `0x61Bd107642261f6601e74d25eC6CB98b8A82dffC` |
+| Base Sepolia | `0x025B4eED9942A2d11B779c43Ff571Aa78eACB39a` |
+| Avalanche Fuji | `0x398Bc220F1dd90b15696511F13aB60705a8c2E66` |
+
+Re-deploy: `pnpm --filter @workspace/scripts run deploy-paymaster`
+Constructor: `(address usdc, address relayer, address feeRecipient, uint256 gasRate)`
+Note: must compile with `evmVersion: "paris"` — Arc Testnet and Fuji reject PUSH0 (shanghai).
+
 ## FeeRouter v2 Addresses (deployed 2025-05-23, hardened)
 
 Security hardening over v1: immutable usdc/tokenMessenger (no caller-supplied addresses), reentrancy lock, zero mintRecipient check, rescueTokens return-value check.
