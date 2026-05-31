@@ -31,7 +31,7 @@ const VAULTS: VaultConfig[] = [
     rpcUrl: "https://rpc.drpc.testnet.arc.network",
     explorerUrl: "https://testnet.arcscan.app",
     logoColor: "#354457",
-    vaultAddress: "0x586f6598755F17308CCf96254c935Ab4e08f71b2",
+    vaultAddress: "0x9677b4BB48B552E7042619056414Fe69d2b5e204",
     usdcAddress: "0x3600000000000000000000000000000000000000",
   },
   {
@@ -41,7 +41,7 @@ const VAULTS: VaultConfig[] = [
     rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
     explorerUrl: "https://sepolia.etherscan.io",
     logoColor: "#627EEA",
-    vaultAddress: "PLACEHOLDER_SEPOLIA", // insufficient gas — deploy pending
+    vaultAddress: "0xCD75dad98b3bC9bb3Bb153b623772967e77d56F1",
     usdcAddress: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
   },
   {
@@ -51,7 +51,7 @@ const VAULTS: VaultConfig[] = [
     rpcUrl: "https://sepolia.base.org",
     explorerUrl: "https://sepolia.basescan.org",
     logoColor: "#0052FF",
-    vaultAddress: "0x6F80056564491425273A6a481EcC5DAea9D57f23",
+    vaultAddress: "0xDE761A1b0FC1271AF2D1682158D428Bd12DC710d",
     usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
   },
   {
@@ -61,7 +61,7 @@ const VAULTS: VaultConfig[] = [
     rpcUrl: "https://api.avax-test.network/ext/bc/C/rpc",
     explorerUrl: "https://testnet.snowtrace.io",
     logoColor: "#E84142",
-    vaultAddress: "0x025B4eED9942A2d11B779c43Ff571Aa78eACB39a",
+    vaultAddress: "0x57a298356E6B2A98d44C68Ff92B7372D639684E0",
     usdcAddress: "0x5425890298aed601595a70AB815c96711a31Bc65",
   },
 ];

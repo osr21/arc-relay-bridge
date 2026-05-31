@@ -32,10 +32,10 @@ export const USDC_APPROVE_ABI = [
  * Updated after deployment — keyed by chain ID.
  */
 export const VAULT_ADDRESSES: Record<number, string> = {
-  5042002:  "0x586f6598755F17308CCf96254c935Ab4e08f71b2", // Arc Testnet  — 18.5% APY
-  11155111: "PLACEHOLDER_SEPOLIA",                      // Sepolia      — insufficient gas, deploy pending
-  84532:    "0x6F80056564491425273A6a481EcC5DAea9D57f23", // Base Sepolia — 12.3% APY
-  43113:    "0x025B4eED9942A2d11B779c43Ff571Aa78eACB39a", // Fuji         —  9.2% APY
+  5042002:  "0x9677b4BB48B552E7042619056414Fe69d2b5e204", // Arc Testnet       — 18.5% APY
+  11155111: "0xCD75dad98b3bC9bb3Bb153b623772967e77d56F1", // Ethereum Sepolia  —  7.8% APY
+  84532:    "0xDE761A1b0FC1271AF2D1682158D428Bd12DC710d", // Base Sepolia      — 12.3% APY
+  43113:    "0x57a298356E6B2A98d44C68Ff92B7372D639684E0", // Avalanche Fuji    —  9.2% APY
 };
 
 export interface VaultRate {
