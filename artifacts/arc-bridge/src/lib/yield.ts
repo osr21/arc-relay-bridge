@@ -253,5 +253,39 @@ export async function withdrawFromVault(
   return { txHash: tx.hash as string, received };
 }
 
+const BALANCE_ABI = ["function balanceOf(address) view returns (uint256)"];
+
+/**
+ * Read the wallet's USDC balance on every chain simultaneously.
+ * Uses each chain's public RPC — no wallet connection needed.
+ * Returns a map of chainId → USDC units (6 decimals).
+ */
+export async function fetchUsdcBalances(
+  userAddress: string
+): Promise<Record<number, bigint>> {
+  const entries = await Promise.all(
+    Object.values(CHAINS).map(async (chain): Promise<[number, bigint]> => {
+      const urls = [chain.rpcUrl, ...chain.rpcFallbacks];
+      for (const url of urls) {
+        try {
+          const provider = new ethers.JsonRpcProvider(url);
+          const usdc = new ethers.Contract(chain.usdcAddress, BALANCE_ABI, provider);
+          const bal = await Promise.race<bigint>([
+            usdc.balanceOf(userAddress) as Promise<bigint>,
+            new Promise<never>((_, rej) =>
+              setTimeout(() => rej(new Error("timeout")), 7000)
+            ),
+          ]);
+          return [chain.id, bal];
+        } catch {
+          // try next RPC or fall through to 0n
+        }
+      }
+      return [chain.id, 0n];
+    })
+  );
+  return Object.fromEntries(entries);
+}
+
 /** User-friendly error message for vault interactions. */
 export { friendlyError };

@@ -7,7 +7,7 @@ import { CHAINS, ChainConfig } from "@/lib/chains";
 import { connectWallet, getWalletChainId } from "@/lib/bridge";
 import {
   VaultRate, VaultPosition, DepositStatus,
-  fetchAllRates, fetchAllPositions,
+  fetchAllRates, fetchAllPositions, fetchUsdcBalances,
   depositToVault, withdrawFromVault,
   fmtUsdc, fmtApy, friendlyError, isVaultDeployed,
 } from "@/lib/yield";
@@ -35,6 +35,8 @@ function ChainCard({
   isBest,
   position,
   walletAddress,
+  walletBalance,
+  balanceLoading,
   onDeposit,
   onWithdraw,
 }: {
@@ -42,11 +44,13 @@ function ChainCard({
   isBest: boolean;
   position: VaultPosition | null;
   walletAddress: string | null;
+  walletBalance: bigint | null;
+  balanceLoading: boolean;
   onDeposit: (chain: ChainConfig) => void;
   onWithdraw: (chain: ChainConfig) => void;
 }) {
-  const chain   = rate.chain;
-  const tvlUsdc = Number(rate.totalDeposited) / 1e6;
+  const chain    = rate.chain;
+  const tvlUsdc  = Number(rate.totalDeposited) / 1e6;
   const deployed = rate.isDeployed;
 
   return (
@@ -71,7 +75,7 @@ function ChainCard({
         >
           {chain.shortName.slice(0, 2)}
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="font-semibold text-white leading-tight">{chain.name}</div>
           <div className="text-xs text-white/40">CCTP Domain {chain.cctpDomain}</div>
         </div>
@@ -89,12 +93,29 @@ function ChainCard({
         </div>
       </div>
 
+      {/* Wallet balance */}
+      {walletAddress && (
+        <div className="flex items-center justify-between rounded-xl bg-white/5 border border-white/8 px-3 py-2">
+          <span className="text-xs text-white/50">Wallet balance</span>
+          {balanceLoading && walletBalance === null ? (
+            <span className="text-xs text-white/30 animate-pulse">loading…</span>
+          ) : (
+            <span className={cn(
+              "text-xs font-mono font-semibold",
+              walletBalance && walletBalance > 0n ? "text-white" : "text-white/35"
+            )}>
+              {walletBalance !== null ? `${fmtUsdc(walletBalance)} USDC` : "—"}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* User position */}
       {position && (
         <div className="rounded-xl bg-white/8 border border-white/10 px-4 py-3 space-y-1">
-          <div className="text-xs text-white/50 uppercase tracking-wider font-medium">Your position</div>
+          <div className="text-xs text-white/50 uppercase tracking-wider font-medium">Deposited</div>
           <div className="flex justify-between text-sm">
-            <span className="text-white/70">Deposited</span>
+            <span className="text-white/70">Principal</span>
             <span className="text-white font-mono">{fmtUsdc(position.principal)} USDC</span>
           </div>
           <div className="flex justify-between text-sm">
@@ -114,21 +135,23 @@ function ChainCard({
           {!position && (
             <button
               onClick={() => onDeposit(chain)}
+              disabled={walletBalance !== null && walletBalance === 0n}
               className={cn(
-                "flex-1 rounded-xl py-2 text-sm font-semibold transition-colors",
+                "flex-1 rounded-xl py-2 text-sm font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed",
                 isBest
                   ? "bg-emerald-500 hover:bg-emerald-400 text-black"
                   : "bg-white/10 hover:bg-white/20 text-white"
               )}
             >
-              Deposit
+              {walletBalance !== null && walletBalance === 0n ? "No USDC" : "Deposit"}
             </button>
           )}
           {position && (
             <>
               <button
                 onClick={() => onDeposit(chain)}
-                className="flex-1 rounded-xl py-2 text-sm font-semibold bg-white/10 hover:bg-white/20 text-white transition-colors"
+                disabled={walletBalance !== null && walletBalance === 0n}
+                className="flex-1 rounded-xl py-2 text-sm font-semibold bg-white/10 hover:bg-white/20 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
               >
                 Add more
               </button>
@@ -151,15 +174,19 @@ function ChainCard({
 
 function DepositModal({
   chain,
+  walletBalance,
   onClose,
   onSuccess,
 }: {
   chain: ChainConfig;
+  walletBalance: bigint | null;
   onClose: () => void;
   onSuccess: () => void;
 }) {
   const [amount, setAmount]   = useState("");
   const [status, setStatus]   = useState<DepositStatus>({ step: "idle", message: "" });
+
+  const maxAmount = walletBalance != null ? Number(walletBalance) / 1e6 : null;
 
   const handleDeposit = async () => {
     const trimmed = amount.trim();
@@ -175,6 +202,8 @@ function DepositModal({
   };
 
   const busy = ["switching", "approving", "depositing"].includes(status.step);
+  const parsedAmount = parseFloat(amount);
+  const exceedsBalance = maxAmount !== null && !isNaN(parsedAmount) && parsedAmount > maxAmount;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -185,6 +214,22 @@ function DepositModal({
         </div>
 
         <div className="space-y-4">
+          {/* Balance row */}
+          {walletBalance !== null && (
+            <div className="flex items-center justify-between text-xs px-1">
+              <span className="text-white/50">Wallet balance</span>
+              <button
+                type="button"
+                disabled={busy || walletBalance === 0n}
+                onClick={() => setAmount(maxAmount!.toFixed(6))}
+                className="flex items-center gap-1 text-blue-400 hover:text-blue-300 disabled:opacity-40 disabled:cursor-not-allowed font-semibold transition-colors"
+              >
+                {fmtUsdc(walletBalance)} USDC
+                <span className="bg-blue-500/20 text-blue-400 px-1.5 py-0.5 rounded text-[10px] font-bold">MAX</span>
+              </button>
+            </div>
+          )}
+
           <div>
             <label className="text-sm text-white/60 mb-1.5 block">USDC Amount</label>
             <input
@@ -193,8 +238,14 @@ function DepositModal({
               onChange={(e) => setAmount(e.target.value)}
               placeholder="0.00"
               disabled={busy}
-              className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white text-lg placeholder-white/20 focus:outline-none focus:border-white/30 disabled:opacity-50"
+              className={cn(
+                "w-full bg-white/5 border rounded-xl px-4 py-3 text-white text-lg placeholder-white/20 focus:outline-none disabled:opacity-50",
+                exceedsBalance ? "border-red-500/50 focus:border-red-400" : "border-white/10 focus:border-white/30"
+              )}
             />
+            {exceedsBalance && (
+              <p className="text-red-400 text-xs mt-1.5 px-1">Exceeds wallet balance of {fmtUsdc(walletBalance!)} USDC</p>
+            )}
           </div>
 
           {status.step !== "idle" && (
@@ -443,6 +494,8 @@ export default function YieldPage() {
 
   const [rates,     setRates]     = useState<VaultRate[]>([]);
   const [positions, setPositions] = useState<VaultPosition[]>([]);
+  const [walletBalances, setWalletBalances] = useState<Record<number, bigint>>({});
+  const [balanceLoading, setBalanceLoading] = useState(false);
   const [loading,   setLoading]   = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -471,12 +524,25 @@ export default function YieldPage() {
     }
   }, []);
 
+  const loadBalances = useCallback(async (addr: string) => {
+    setBalanceLoading(true);
+    try {
+      const bals = await fetchUsdcBalances(addr);
+      setWalletBalances(bals);
+    } catch {
+      // non-fatal
+    } finally {
+      setBalanceLoading(false);
+    }
+  }, []);
+
   useEffect(() => { void load(walletAddress ?? undefined); }, [load, walletAddress]);
 
   function handleWalletConnect(addr: string, chainId: number) {
     setWalletAddress(addr);
     setWalletChainId(chainId);
     void load(addr);
+    void loadBalances(addr);
   }
 
   function handleWithdrawSuccess(received: bigint, fromChain: ChainConfig) {
@@ -547,6 +613,7 @@ export default function YieldPage() {
                   const addr = await connectWallet();
                   const cid  = await getWalletChainId();
                   handleWalletConnect(addr, cid);
+                  void loadBalances(addr);
                 } catch { /* user cancelled */ }
               }}
               className="inline-flex items-center gap-2 mt-4 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm transition-colors"
@@ -595,6 +662,8 @@ export default function YieldPage() {
                 isBest={isBest(rate)}
                 position={positionFor(rate)}
                 walletAddress={walletAddress}
+                walletBalance={walletAddress ? (walletBalances[rate.chain.id] ?? null) : null}
+                balanceLoading={balanceLoading}
                 onDeposit={(chain) => setDepositChain(chain)}
                 onWithdraw={(chain) => setWithdrawChain(chain)}
               />
@@ -664,8 +733,12 @@ export default function YieldPage() {
       {depositChain && (
         <DepositModal
           chain={depositChain}
+          walletBalance={walletAddress ? (walletBalances[depositChain.id] ?? null) : null}
           onClose={() => setDepositChain(null)}
-          onSuccess={() => void load(walletAddress ?? undefined)}
+          onSuccess={() => {
+            void load(walletAddress ?? undefined);
+            if (walletAddress) void loadBalances(walletAddress);
+          }}
         />
       )}
       {withdrawChain && (
