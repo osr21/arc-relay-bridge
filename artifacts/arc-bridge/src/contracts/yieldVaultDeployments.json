@@ -1,0 +1,19 @@
+{
+  "deployments": {
+    "43113": {
+      "address": "0x025B4eED9942A2d11B779c43Ff571Aa78eACB39a",
+      "apyBps": 920,
+      "vaultLabel": "Fuji Yield Vault"
+    },
+    "84532": {
+      "address": "0x6F80056564491425273A6a481EcC5DAea9D57f23",
+      "apyBps": 1230,
+      "vaultLabel": "Base Yield Vault"
+    },
+    "5042002": {
+      "address": "0x586f6598755F17308CCf96254c935Ab4e08f71b2",
+      "apyBps": 1850,
+      "vaultLabel": "Arc Yield Vault"
+    }
+  }
+}

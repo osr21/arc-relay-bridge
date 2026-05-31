@@ -1,11 +1,13 @@
 import { Switch, Route, Router as WouterRouter } from "wouter";
 import BridgePage from "@/pages/BridgePage";
-import NotFound from "@/pages/not-found";
+import YieldPage  from "@/pages/YieldPage";
+import NotFound   from "@/pages/not-found";
 
 function Router() {
   return (
     <Switch>
-      <Route path="/" component={BridgePage} />
+      <Route path="/"      component={BridgePage} />
+      <Route path="/yield" component={YieldPage}  />
       <Route component={NotFound} />
     </Switch>
   );
