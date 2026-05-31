@@ -1,0 +1,6 @@
+{
+  "deployments": {},
+  "gasRate": "2",
+  "feeRecipient": "",
+  "note": "Run: pnpm --filter @workspace/scripts run deploy-paymaster"
+}
