@@ -55,14 +55,16 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 - Base Sepolia USDC: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - Fuji USDC: `0x5425890298aed601595a70AB815c96711a31Bc65`
 
-## Paymaster Addresses (deployed 2025-05-31, evmVersion paris)
+## Paymaster Addresses (deployed 2025-05-31 v2, evmVersion paris, hardened)
+
+Security hardening over v1: rescueTokens blocks USDC rescue (protects deposits), setGasRate capped at MAX_GAS_RATE (1 USDC/gas).
 
 | Chain | Address |
 |---|---|
-| Arc Testnet | `0x3bffbbBE98D3FDD9E25A76ca5Fd5962A19cB19Eb` |
-| Ethereum Sepolia | `0x61Bd107642261f6601e74d25eC6CB98b8A82dffC` |
-| Base Sepolia | `0x025B4eED9942A2d11B779c43Ff571Aa78eACB39a` |
-| Avalanche Fuji | `0x398Bc220F1dd90b15696511F13aB60705a8c2E66` |
+| Arc Testnet | `0x05FCDBf7E7b7c50929D7ccdd32000be30a796E60` |
+| Ethereum Sepolia | `0xE0b2557C27cc358C27376A96493Fa97c3EC58b31` |
+| Base Sepolia | `0x57a298356E6B2A98d44C68Ff92B7372D639684E0` |
+| Avalanche Fuji | `0x06e2AF4CD0B05B5c415fBe7Ce256be41a6D8D7F4` |
 
 Re-deploy: `pnpm --filter @workspace/scripts run deploy-paymaster`
 Constructor: `(address usdc, address relayer, address feeRecipient, uint256 gasRate)`

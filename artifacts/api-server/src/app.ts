@@ -59,9 +59,19 @@ const chainsLimiter = rateLimit({
   message: { error: "Too many requests." },
 });
 
+// Paymaster balance: 4 parallel RPC calls per request — limit to 30/min per IP.
+const paymasterLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many paymaster requests — please wait a moment." },
+});
+
 app.use("/api/attest",    attestLimiter);
 app.use("/api/relay",     relayLimiter);
 app.use("/api/chains",    chainsLimiter);
+app.use("/api/paymaster", paymasterLimiter);
 app.use("/api", router);
 
 export default app;
