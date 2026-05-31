@@ -2,31 +2,18 @@
 pragma solidity ^0.8.20;
 
 /**
- * @title FeeRouter v3
+ * @title FeeRouter v2
  * @notice Collects a protocol fee and forwards the net amount to Circle's CCTP V2
  *         TokenMessenger in a single user transaction.
  *
- * Changelog v2 → v3
- * ──────────────────
- *   - Two-step ownership transfer (Ownable2Step pattern): transferOwnership()
- *     queues a pending owner; acceptOwnership() must be called by the new owner
- *     to confirm.  Prevents permanent ownership loss from a typo.
- *   - Slippage guard: bridge() accepts minBridgeAmount — the contract reverts
- *     if feeBps was changed between the user signing and the tx mining, ensuring
- *     the user always receives at least what they agreed to.
- *   - Residual approval reset: after depositForBurn() the contract resets
- *     the tokenMessenger allowance to zero.  Defensive — CCTP should always
- *     consume the exact approved amount, but the reset is an extra safeguard.
- *   - Emergency pause: owner can halt all bridge() calls with pause()/unpause()
- *     without touching any other contract state.
- *
- * Retained from v2
- * ──────────────────
+ * Security hardening over v1
+ * ──────────────────────────
  *   - Immutable usdc and tokenMessenger (set at deploy, not caller-supplied).
+ *     Eliminates the risk of a caller routing funds through an attacker-controlled
+ *     token or messenger.
  *   - Reentrancy lock on bridge().
- *   - Zero mintRecipient check.
- *   - rescueTokens() return-value check.
- *   - MAX_FEE_BPS = 500 (5% hard cap).
+ *   - Zero mintRecipient check — prevents burning to the zero address.
+ *   - rescueTokens() return-value check — surfaces ERC-20 failures that don't revert.
  */
 
 interface IERC20 {
@@ -58,11 +45,8 @@ contract FeeRouter {
 
     // ── Mutable admin state ──────────────────────────────────────────────────
     address public owner;
-    /// @notice Queued next owner — must call acceptOwnership() to confirm.
-    address public pendingOwner;
     address public feeRecipient;
     uint256 public feeBps;
-    bool    public paused;
 
     uint256 public constant MAX_FEE_BPS = 500; // 5% hard cap
 
@@ -80,10 +64,7 @@ contract FeeRouter {
     );
     event FeeUpdated(uint256 oldBps, uint256 newBps);
     event FeeRecipientUpdated(address oldRecipient, address newRecipient);
-    event OwnershipTransferInitiated(address indexed currentOwner, address indexed pendingOwner);
     event OwnershipTransferred(address indexed oldOwner, address indexed newOwner);
-    event Paused(address account);
-    event Unpaused(address account);
 
     // ── Modifiers ────────────────────────────────────────────────────────────
     modifier onlyOwner() {
@@ -96,11 +77,6 @@ contract FeeRouter {
         _locked = true;
         _;
         _locked = false;
-    }
-
-    modifier whenNotPaused() {
-        require(!paused, "FeeRouter: paused");
-        _;
     }
 
     // ── Constructor ──────────────────────────────────────────────────────────
@@ -135,17 +111,14 @@ contract FeeRouter {
      * @param destinationDomain    CCTP domain ID of the destination chain.
      * @param mintRecipient        32-byte padded recipient on destination (non-zero).
      * @param minFinalityThreshold CCTP V2 finality threshold (2000=finalized, 1000=safe).
-     * @param minBridgeAmount      Slippage guard — reverts if net amount after fee is below this.
-     *                             Pass 0 to skip the check (not recommended for production).
      * @return nonce               CCTP burn nonce from the TokenMessenger.
      */
     function bridge(
         uint256 grossAmount,
         uint32  destinationDomain,
         bytes32 mintRecipient,
-        uint32  minFinalityThreshold,
-        uint256 minBridgeAmount
-    ) external nonReentrant whenNotPaused returns (uint64 nonce) {
+        uint32  minFinalityThreshold
+    ) external nonReentrant returns (uint64 nonce) {
         require(grossAmount    > 0,          "FeeRouter: zero amount");
         require(mintRecipient != bytes32(0), "FeeRouter: zero recipient");
 
@@ -157,11 +130,6 @@ contract FeeRouter {
         uint256 feeAmount    = (grossAmount * feeBps) / 10000;
         uint256 bridgeAmount = grossAmount - feeAmount;
         require(bridgeAmount > 0, "FeeRouter: bridge amount zero");
-
-        // Slippage guard — protects against fee front-running between signing and mining
-        if (minBridgeAmount > 0) {
-            require(bridgeAmount >= minBridgeAmount, "FeeRouter: slippage exceeded");
-        }
 
         if (feeAmount > 0) {
             require(
@@ -186,12 +154,6 @@ contract FeeRouter {
             minFinalityThreshold
         );
 
-        // Best-effort: reset residual allowance to zero after the burn.
-        // CCTP should consume exactly bridgeAmount, so this is normally a no-op.
-        // Wrapped in try/catch because non-standard ERC-20 implementations (e.g.
-        // Arc Testnet's system USDC at 0x3600…0000) may revert on approve(0).
-        try IERC20(usdc).approve(tokenMessenger, 0) returns (bool) {} catch {}
-
         emit BridgeInitiated(
             msg.sender,
             grossAmount,
@@ -215,40 +177,11 @@ contract FeeRouter {
         feeRecipient = _feeRecipient;
     }
 
-    // ── Admin: two-step ownership transfer ───────────────────────────────────
-    /**
-     * @notice Initiate ownership transfer. The new owner must call acceptOwnership().
-     * @dev Does NOT transfer immediately — prevents permanent loss from address typos.
-     */
+    // ── Admin: ownership transfer ────────────────────────────────────────────
     function transferOwnership(address newOwner) external onlyOwner {
         require(newOwner != address(0), "FeeRouter: zero address");
-        pendingOwner = newOwner;
-        emit OwnershipTransferInitiated(owner, newOwner);
-    }
-
-    /**
-     * @notice Complete ownership transfer. Must be called by the pending owner.
-     */
-    function acceptOwnership() external {
-        require(msg.sender == pendingOwner, "FeeRouter: not pending owner");
-        emit OwnershipTransferred(owner, pendingOwner);
-        owner        = pendingOwner;
-        pendingOwner = address(0);
-    }
-
-    // ── Admin: emergency pause ───────────────────────────────────────────────
-    /// @notice Halt all bridge() calls. Does not affect admin functions.
-    function pause() external onlyOwner {
-        require(!paused, "FeeRouter: already paused");
-        paused = true;
-        emit Paused(msg.sender);
-    }
-
-    /// @notice Resume bridge() calls.
-    function unpause() external onlyOwner {
-        require(paused, "FeeRouter: not paused");
-        paused = false;
-        emit Unpaused(msg.sender);
+        emit OwnershipTransferred(owner, newOwner);
+        owner = newOwner;
     }
 
     // ── Admin: token rescue ───────────────────────────────────────────────────

@@ -45,6 +45,16 @@ router.get("/attest", async (req, res) => {
     return;
   }
 
+  if (!/^\d{1,10}$/.test(domain)) {
+    res.status(400).json({ error: "Invalid domain — must be a positive integer" });
+    return;
+  }
+
+  if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
+    res.status(400).json({ error: "Invalid txHash — must be a 0x-prefixed 32-byte hex string" });
+    return;
+  }
+
   const endpoints = [
     { label: "v2", url: `${IRIS_API}/v2/messages/${domain}?transactionHash=${txHash}` },
     { label: "v1", url: `${IRIS_API}/v1/messages/${domain}/${txHash}` },

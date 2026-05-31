@@ -17,7 +17,11 @@ export const FEE_RECIPIENT: string = (import.meta.env.VITE_FEE_RECIPIENT as stri
 
 /** Whether fee collection is fully configured and active. */
 export function isFeeActive(): boolean {
-  return FEE_BPS > 0 && FEE_RECIPIENT.length > 0;
+  // Validate that FEE_RECIPIENT is a properly formatted non-zero Ethereum address.
+  const isValidAddress =
+    /^0x[0-9a-fA-F]{40}$/.test(FEE_RECIPIENT) &&
+    FEE_RECIPIENT.toLowerCase() !== "0x0000000000000000000000000000000000000000";
+  return FEE_BPS > 0 && isValidAddress;
 }
 
 export interface FeeBreakdown {

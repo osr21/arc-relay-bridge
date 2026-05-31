@@ -46,9 +46,11 @@ interface StepProgressProps {
   step: BridgeStep;
   failedAtStep?: ActiveStep;
   hasFee: boolean;
+  /** Override display label for specific steps (e.g. {minting: "Relay"} in gas-relay mode). */
+  stepLabels?: Partial<Record<ActiveStep, string>>;
 }
 
-export function StepProgress({ step, failedAtStep, hasFee }: StepProgressProps) {
+export function StepProgress({ step, failedAtStep, hasFee, stepLabels }: StepProgressProps) {
   if (step === "idle") return null;
 
   const visibleSteps = ALL_STEPS.filter((s) => !s.feeOnly || hasFee);
@@ -83,7 +85,7 @@ export function StepProgress({ step, failedAtStep, hasFee }: StepProgressProps) 
                   state === "error"   && "text-red-400"
                 )}
               >
-                {s.label}
+                {stepLabels?.[s.key] ?? s.label}
               </span>
             </div>
             {idx < visibleSteps.length - 1 && (

@@ -6,7 +6,10 @@
   "scripts": {
     "hello": "tsx ./src/hello.ts",
     "compile": "tsx ./src/compile.ts",
+    "compile-yield": "tsx ./src/compileYield.ts",
     "deploy": "tsx ./src/deployFeeRouter.ts",
+    "deploy-relayer": "tsx ./src/deployGasRelayer.ts",
+    "deploy-yield": "tsx ./src/deployYield.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

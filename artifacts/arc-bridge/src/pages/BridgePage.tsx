@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ArrowDownUp, Info, RefreshCw, ExternalLink, Zap } from "lucide-react";
+import { ArrowDownUp, Info, RefreshCw, ExternalLink, Zap, RotateCcw } from "lucide-react";
 import { CHAINS, ChainConfig, getChainById } from "@/lib/chains";
 import {
   BridgeStatus,
@@ -9,10 +9,13 @@ import {
   getUsdcBalance,
   switchToChain,
   executeBridge,
+  resumeBridge,
   friendlyError,
   addUsdcToWallet,
+  GAS_RELAY_FEE_UNITS,
 } from "@/lib/bridge";
 import { calculateFee, formatUsdc, FEE_BPS, isFeeActive } from "@/lib/config";
+import { BridgeSession, saveSession, loadSession, clearSession } from "@/lib/session";
 import { WalletButton } from "@/components/WalletButton";
 import { ChainSelector } from "@/components/ChainSelector";
 import { StepProgress } from "@/components/StepProgress";
@@ -31,6 +34,7 @@ export default function BridgePage() {
   const [amount, setAmount]       = useState("");
   const [recipient, setRecipient] = useState("");
   const [useCustomRecipient, setUseCustomRecipient] = useState(false);
+  const [useGasRelay, setUseGasRelay] = useState(false);
 
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletChainId, setWalletChainId] = useState<number | null>(null);
@@ -42,10 +46,12 @@ export default function BridgePage() {
     step: "idle",
     message: "",
   });
+  const [resumeSession, setResumeSession] = useState<BridgeSession | null>(null);
 
   const currentStepRef  = useRef<ActiveStep | null>(null);
   const lastBurnTxRef   = useRef<string | undefined>(undefined);
   const lastFeeTxRef    = useRef<string | undefined>(undefined);
+  const lastMintTxRef   = useRef<string | undefined>(undefined);
 
   function handleWalletConnect(addr: string, chainId: number) {
     setWalletAddress(addr);
@@ -66,6 +72,17 @@ export default function BridgePage() {
   }, [walletAddress, fromChain, toChain]);
 
   useEffect(() => { refreshBalances(); }, [refreshBalances]);
+
+  // Load any saved bridge session on mount
+  useEffect(() => {
+    const session = loadSession();
+    if (session) {
+      const from = getChainById(session.fromChainId);
+      const to   = getChainById(session.toChainId);
+      if (from && to) setResumeSession(session);
+      else clearSession();
+    }
+  }, []);
 
   useEffect(() => {
     if (!window.ethereum) return;
@@ -139,9 +156,9 @@ export default function BridgePage() {
     try {
       await executeBridge(fromChain, toChain, amount, effectiveRecipient, (status) => {
         setBridgeStatus(status);
-        // Track tx hashes so the error handler can preserve them if we throw later
-        if (status.burnTxHash) lastBurnTxRef.current = status.burnTxHash;
-        if (status.feeTxHash)  lastFeeTxRef.current  = status.feeTxHash;
+        if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
+        if (status.feeTxHash)  lastFeeTxRef.current   = status.feeTxHash;
+        if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
         if (
           status.step === "approving"  ||
           status.step === "collecting" ||
@@ -151,10 +168,23 @@ export default function BridgePage() {
         ) {
           currentStepRef.current = status.step;
         }
-      });
+        // Save session once burn is confirmed so user can resume after a refresh
+        if (status.step === "attesting" && status.burnTxHash) {
+          saveSession({
+            burnTxHash:  status.burnTxHash,
+            feeTxHash:   status.feeTxHash,
+            messageBytes: status.messageBytes,
+            fromChainId: fromChain.id,
+            toChainId:   toChain.id,
+            amount,
+            recipient:   effectiveRecipient,
+            savedAt:     Date.now(),
+          });
+        }
+      }, { useGasRelay: useGasRelay && !!toChain.gasRelayerAddress });
+      clearSession();
       await refreshBalances();
     } catch (err: unknown) {
-      // Preserve any tx hashes already emitted — critical for attestation timeout recovery
       setBridgeStatus({
         step: "error",
         message: "Bridge failed",
@@ -162,6 +192,51 @@ export default function BridgePage() {
         failedAtStep: currentStepRef.current ?? undefined,
         feeTxHash:    lastFeeTxRef.current,
         burnTxHash:   lastBurnTxRef.current,
+        mintTxHash:   lastMintTxRef.current,
+      });
+    }
+  }
+
+  async function handleResume() {
+    if (!resumeSession || !walletAddress) return;
+    const from = getChainById(resumeSession.fromChainId);
+    const to   = getChainById(resumeSession.toChainId);
+    if (!from || !to) { clearSession(); setResumeSession(null); return; }
+
+    setFromChain(from);
+    setToChain(to);
+    setResumeSession(null);
+    currentStepRef.current = null;
+    lastBurnTxRef.current  = resumeSession.burnTxHash;
+    lastFeeTxRef.current   = resumeSession.feeTxHash;
+    lastMintTxRef.current  = undefined;
+
+    try {
+      await resumeBridge(
+        from, to,
+        resumeSession.burnTxHash,
+        resumeSession.messageBytes,
+        resumeSession.feeTxHash,
+        (status) => {
+          setBridgeStatus(status);
+          if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
+          if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
+          if (
+            status.step === "attesting" || status.step === "minting"
+          ) currentStepRef.current = status.step;
+        }
+      );
+      clearSession();
+      await refreshBalances();
+    } catch (err: unknown) {
+      setBridgeStatus({
+        step: "error",
+        message: "Resume failed",
+        error: friendlyError(err),
+        failedAtStep: currentStepRef.current ?? undefined,
+        feeTxHash:    lastFeeTxRef.current,
+        burnTxHash:   lastBurnTxRef.current,
+        mintTxHash:   lastMintTxRef.current,
       });
     }
   }
@@ -170,6 +245,15 @@ export default function BridgePage() {
     setBridgeStatus({ step: "idle", message: "" });
     setAmount("");
     currentStepRef.current = null;
+    lastBurnTxRef.current  = undefined;
+    lastFeeTxRef.current   = undefined;
+    lastMintTxRef.current  = undefined;
+    clearSession();
+  }
+
+  function handleDismissResume() {
+    clearSession();
+    setResumeSession(null);
   }
 
   const isProcessing =
@@ -188,18 +272,33 @@ export default function BridgePage() {
     : null;
   const feeBreakdown = grossUnits !== null ? calculateFee(grossUnits) : null;
 
+  const walletChain    = walletChainId ? getChainById(walletChainId) : null;
+  const fromBalanceNum = safeParseBalance(fromBalance);
+
+  // Insufficient balance — only flag when balance is known (not still loading)
+  const insufficientBalance =
+    fromBalanceNum !== null &&
+    amountIsValid &&
+    parsedAmount > fromBalanceNum;
+
+  // Custom recipient validity — only flagged when the custom address field is active and non-empty
+  const customRecipientInvalid =
+    useCustomRecipient && recipient.trim() !== "" && !ethers.isAddress(recipient.trim());
+  const customRecipientMissing =
+    useCustomRecipient && recipient.trim() === "";
+
   const canBridge =
     !!walletAddress &&
     amountIsValid &&
     !isProcessing &&
     !wrongNetwork &&
-    !sameChain;
-
-  const walletChain    = walletChainId ? getChainById(walletChainId) : null;
-  const fromBalanceNum = safeParseBalance(fromBalance);
+    !sameChain &&
+    !insufficientBalance &&
+    !customRecipientInvalid &&
+    !customRecipientMissing;
 
   function applyMaxBalance() {
-    if (fromBalanceNum !== null) setAmount(fromBalanceNum.toFixed(6));
+    if (fromBalance !== "—" && fromBalance !== "0.000000") setAmount(fromBalance);
   }
 
   return (
@@ -217,14 +316,20 @@ export default function BridgePage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <a href="/yield"
+            className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 font-medium transition-colors">
+            Yield ↗
+          </a>
           <a href="https://faucet.circle.com" target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
             Faucet <ExternalLink className="w-3 h-3" />
           </a>
-          <a href="https://explorer.testnet.arc.network" target="_blank" rel="noopener noreferrer"
-            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
-            Explorer <ExternalLink className="w-3 h-3" />
-          </a>
+          {fromChain.explorerUrl ? (
+            <a href={fromChain.explorerUrl} target="_blank" rel="noopener noreferrer"
+              className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
+              Explorer <ExternalLink className="w-3 h-3" />
+            </a>
+          ) : null}
           <WalletButton address={walletAddress} chainId={walletChainId} onConnect={handleWalletConnect} />
         </div>
       </header>
@@ -257,6 +362,47 @@ export default function BridgePage() {
             </div>
 
             <div className="p-6 space-y-4">
+
+              {/* ── Resume interrupted session banner ── */}
+              {resumeSession && bridgeStatus.step === "idle" && (() => {
+                const from = getChainById(resumeSession.fromChainId);
+                const to   = getChainById(resumeSession.toChainId);
+                if (!from || !to) return null;
+                const minsAgo = Math.round((Date.now() - resumeSession.savedAt) / 60000);
+                return (
+                  <div className="flex items-start justify-between gap-3 px-4 py-3 bg-[#4F9CF9]/10 border border-[#4F9CF9]/30 rounded-xl">
+                    <div className="flex items-start gap-2 min-w-0">
+                      <RotateCcw className="w-4 h-4 text-[#4F9CF9] mt-0.5 flex-shrink-0" />
+                      <div className="min-w-0">
+                        <p className="text-[#7BB8FB] text-xs font-semibold">Interrupted transfer found</p>
+                        <p className="text-slate-400 text-[11px] mt-0.5 leading-relaxed">
+                          {resumeSession.amount} USDC · {from.shortName} → {to.shortName}
+                          {minsAgo > 0 ? ` · ${minsAgo}m ago` : ""}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex gap-1.5 flex-shrink-0">
+                      {walletAddress ? (
+                        <button
+                          onClick={handleResume}
+                          className="text-xs font-semibold text-[#4F9CF9] border border-[#4F9CF9]/40 px-3 py-1.5 rounded-lg hover:bg-[#4F9CF9]/10 transition-all whitespace-nowrap"
+                        >
+                          Resume
+                        </button>
+                      ) : (
+                        <span className="text-xs text-slate-500 py-1.5">Connect wallet to resume</span>
+                      )}
+                      <button
+                        onClick={handleDismissResume}
+                        className="text-xs text-slate-500 hover:text-slate-300 px-2 py-1.5 transition-colors"
+                        title="Dismiss"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Wrong network banner */}
               {wrongNetwork && (
@@ -292,7 +438,7 @@ export default function BridgePage() {
                   <div className="flex items-center justify-between px-1">
                     <span className="text-xs text-slate-500">Balance</span>
                     <button onClick={applyMaxBalance}
-                      disabled={fromBalanceNum === null || isProcessing}
+                      disabled={!fromBalanceNum || isProcessing}
                       className="text-xs text-[#4F9CF9] hover:text-[#7BB8FB] font-mono transition-colors disabled:text-slate-500 disabled:cursor-default">
                       {fromBalance} USDC
                     </button>
@@ -315,13 +461,20 @@ export default function BridgePage() {
                 />
                 <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
                   <button onClick={applyMaxBalance}
-                    disabled={fromBalanceNum === null || !walletAddress || isProcessing}
+                    disabled={!fromBalanceNum || !walletAddress || isProcessing}
                     className="text-xs font-semibold text-[#4F9CF9] hover:text-[#7BB8FB] disabled:text-slate-600 disabled:cursor-not-allowed transition-colors">
                     MAX
                   </button>
                   <span className="text-slate-400 text-sm font-medium">USDC</span>
                 </div>
               </div>
+
+              {/* Insufficient balance warning */}
+              {insufficientBalance && (
+                <p className="text-xs text-red-400 px-1">
+                  Insufficient balance — you have {fromBalance} USDC on {fromChain.shortName}.
+                </p>
+              )}
 
               {/* Swap chains */}
               <div className="flex justify-center -my-1">
@@ -356,18 +509,60 @@ export default function BridgePage() {
                   {useCustomRecipient ? "▼" : "▶"} Send to different address
                 </button>
                 {useCustomRecipient && (
-                  <input type="text" value={recipient}
-                    onChange={(e) => setRecipient(e.target.value)}
-                    placeholder="0x… recipient address on destination chain"
-                    disabled={isProcessing}
-                    className={cn(
-                      "mt-2 w-full px-3 py-2.5 rounded-xl text-sm font-mono text-white",
-                      "bg-slate-800/80 border border-slate-700/60 focus:border-[#4F9CF9]/60 focus:outline-none",
-                      "placeholder:text-slate-600 transition-colors disabled:opacity-50"
+                  <>
+                    <input type="text" value={recipient}
+                      onChange={(e) => setRecipient(e.target.value)}
+                      placeholder="0x… recipient address on destination chain"
+                      disabled={isProcessing}
+                      className={cn(
+                        "mt-2 w-full px-3 py-2.5 rounded-xl text-sm font-mono text-white",
+                        "bg-slate-800/80 border focus:outline-none transition-colors disabled:opacity-50",
+                        customRecipientInvalid
+                          ? "border-red-500/60 focus:border-red-500"
+                          : "border-slate-700/60 focus:border-[#4F9CF9]/60",
+                        "placeholder:text-slate-600"
+                      )}
+                    />
+                    {customRecipientInvalid && (
+                      <p className="text-xs text-red-400 px-1 mt-1">
+                        Invalid Ethereum address.
+                      </p>
                     )}
-                  />
+                  </>
                 )}
               </div>
+
+              {/* ── Gas Relay toggle ── */}
+              {toChain.gasRelayerAddress && (
+                <div className="flex items-center justify-between px-4 py-3 bg-slate-800/30 rounded-xl border border-slate-700/40">
+                  <div className="flex items-start gap-2">
+                    <Zap className="w-3.5 h-3.5 text-[#4F9CF9] mt-0.5 flex-shrink-0" />
+                    <div>
+                      <p className="text-xs text-slate-300 font-medium">Gasless relay</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Skip wallet switch — 1 USDC relay fee
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setUseGasRelay(!useGasRelay)}
+                    disabled={isProcessing}
+                    className={cn(
+                      "relative w-9 h-5 rounded-full transition-colors duration-200 flex-shrink-0",
+                      useGasRelay ? "bg-[#4F9CF9]" : "bg-slate-700",
+                      isProcessing && "opacity-50 cursor-not-allowed"
+                    )}
+                    aria-checked={useGasRelay}
+                    role="switch"
+                    aria-label="Enable gasless relay"
+                  >
+                    <span className={cn(
+                      "absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200",
+                      useGasRelay && "translate-x-4"
+                    )} />
+                  </button>
+                </div>
+              )}
 
               {/* ── Fee & Bridge Summary ── */}
               {amountIsValid && !sameChain && feeBreakdown && (
@@ -377,30 +572,39 @@ export default function BridgePage() {
                     <span className="text-white font-medium">{amount} USDC</span>
                   </div>
 
-                  {feeBreakdown.active ? (
-                    <>
-                      <div className="flex justify-between text-xs">
-                        <span className="flex items-center gap-1 text-slate-500">
-                          <Zap className="w-3 h-3 text-[#4F9CF9]" />
-                          Protocol fee ({FEE_BPS / 100}%)
-                        </span>
-                        <span className="text-slate-300 font-mono">
-                          −{formatUsdc(feeBreakdown.feeAmount)} USDC
-                        </span>
-                      </div>
-                      <div className="border-t border-slate-700/60 pt-2 flex justify-between text-xs">
-                        <span className="text-slate-500">You receive</span>
-                        <span className="text-emerald-400 font-semibold">
-                          {formatUsdc(feeBreakdown.bridgeAmount)} USDC
-                        </span>
-                      </div>
-                    </>
-                  ) : (
+                  {feeBreakdown.active && (
                     <div className="flex justify-between text-xs">
-                      <span className="text-slate-500">You receive</span>
-                      <span className="text-emerald-400 font-medium">{amount} USDC</span>
+                      <span className="flex items-center gap-1 text-slate-500">
+                        <Zap className="w-3 h-3 text-[#4F9CF9]" />
+                        Protocol fee ({FEE_BPS / 100}%)
+                      </span>
+                      <span className="text-slate-300 font-mono">
+                        −{formatUsdc(feeBreakdown.feeAmount)} USDC
+                      </span>
                     </div>
                   )}
+
+                  {useGasRelay && toChain.gasRelayerAddress && (
+                    <div className="flex justify-between text-xs">
+                      <span className="flex items-center gap-1 text-slate-500">
+                        <Zap className="w-3 h-3 text-purple-400" />
+                        Relay fee (gasless)
+                      </span>
+                      <span className="text-slate-300 font-mono">
+                        −{formatUsdc(GAS_RELAY_FEE_UNITS)} USDC
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="border-t border-slate-700/60 pt-2 flex justify-between text-xs">
+                    <span className="text-slate-500">You receive</span>
+                    <span className="text-emerald-400 font-semibold">
+                      {formatUsdc(
+                        feeBreakdown.bridgeAmount -
+                          (useGasRelay && toChain.gasRelayerAddress ? GAS_RELAY_FEE_UNITS : 0n)
+                      )} USDC
+                    </span>
+                  </div>
 
                   <div className="flex justify-between text-xs">
                     <span className="text-slate-500">Protocol</span>
@@ -416,6 +620,7 @@ export default function BridgePage() {
                     step={bridgeStatus.step}
                     failedAtStep={bridgeStatus.failedAtStep}
                     hasFee={feeEnabled}
+                    stepLabels={useGasRelay && toChain.gasRelayerAddress ? { minting: "Relay" } : undefined}
                   />
 
                   {/* Status message — special layout for attestation timeout */}
@@ -549,7 +754,7 @@ export default function BridgePage() {
               <Info className="w-3.5 h-3.5 text-slate-500 mt-0.5 flex-shrink-0" />
               <p className="text-[11px] text-slate-500 leading-relaxed">
                 Uses Circle CCTP V2 — USDC is burned on source and natively minted on destination.
-                Arc Testnet CCTP Domain: <span className="text-slate-400 font-mono">7</span>.
+                Arc Testnet CCTP Domain: <span className="text-slate-400 font-mono">26</span>.
                 Get testnet USDC from the{" "}
                 <a href="https://faucet.circle.com" target="_blank" rel="noopener noreferrer"
                   className="text-[#4F9CF9] hover:underline">Circle Faucet</a>.
@@ -559,13 +764,13 @@ export default function BridgePage() {
 
           {/* ── Chain pills ── */}
           <div className="grid grid-cols-2 gap-2">
-            <a href="https://explorer.testnet.arc.network" target="_blank" rel="noopener noreferrer"
+            <a href="https://docs.arc.network" target="_blank" rel="noopener noreferrer"
               className="flex items-center gap-2 px-3 py-2 bg-[#111827]/60 border border-white/[0.05] rounded-xl hover:border-[#4F9CF9]/30 transition-all group">
               <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
                 style={{ background: CHAINS.ARC_TESTNET.logoColor }}>⬡</span>
               <div className="min-w-0">
-                <div className="text-xs text-white font-medium truncate">Arc Testnet</div>
-                <div className="text-[10px] text-slate-500">Chain ID 5042002</div>
+                <div className="text-xs text-white font-medium truncate">Arc Docs</div>
+                <div className="text-[10px] text-slate-500">docs.arc.network</div>
               </div>
               <ExternalLink className="w-3 h-3 text-slate-600 group-hover:text-[#4F9CF9] ml-auto transition-colors" />
             </a>
@@ -575,6 +780,17 @@ export default function BridgePage() {
               <div className="min-w-0">
                 <div className="text-xs text-white font-medium truncate">CCTP V2</div>
                 <div className="text-[10px] text-slate-500">Circle Protocol</div>
+              </div>
+              <ExternalLink className="w-3 h-3 text-slate-600 group-hover:text-[#4F9CF9] ml-auto transition-colors" />
+            </a>
+            <a href="https://github.com/circlefin/arc-node" target="_blank" rel="noopener noreferrer"
+              className="col-span-2 flex items-center gap-2 px-3 py-2 bg-[#111827]/60 border border-white/[0.05] rounded-xl hover:border-[#4F9CF9]/30 transition-all group">
+              <span className="w-5 h-5 rounded-full bg-[#24292e] border border-white/10 flex items-center justify-center flex-shrink-0">
+                <svg viewBox="0 0 16 16" className="w-3 h-3 fill-white"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+              </span>
+              <div className="min-w-0">
+                <div className="text-xs text-white font-medium truncate">Arc Network — GitHub</div>
+                <div className="text-[10px] text-slate-500">circlefin/arc-node</div>
               </div>
               <ExternalLink className="w-3 h-3 text-slate-600 group-hover:text-[#4F9CF9] ml-auto transition-colors" />
             </a>
