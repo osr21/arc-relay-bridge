@@ -107,9 +107,9 @@ export async function createBridgeClient(chainId: number) {
         return {
           paymaster: paymasterAddr,
           paymasterData: "0x" as Hex,
-          // validatePaymasterUserOp makes 5 cold SLOADs + 2 cold SSTOREs
-          // (locked[user] 0→nonzero = 22k, _locked 0→1 = 22k) ≈ 60k total.
-          // 100k gives safe headroom without pushing maxUsdcCost over the 10 USDC cap.
+          // validatePaymasterUserOp makes ~5 cold SLOADs + 1 cold SSTORE
+          // (locked[user] 0→nonzero = 22k) ≈ 40k total.
+          // 100k gives comfortable headroom for gas price variance.
           paymasterVerificationGasLimit: 100_000n,
           paymasterPostOpGasLimit:        80_000n,
         };

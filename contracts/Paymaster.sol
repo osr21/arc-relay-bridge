@@ -208,9 +208,15 @@ contract Paymaster {
         require(user     != address(0),          "Paymaster: zero user");
         require(usdcCost  > 0,                   "Paymaster: zero cost");
         require(usdcCost <= MAX_DEDUCTION_PER_TX, "Paymaster: exceeds cap");
-        require(balances[user] >= usdcCost,       "Paymaster: user underfunded");
 
-        balances[user] -= usdcCost;
+        // Only unlocked funds may be deducted — locked funds are reserved by
+        // pending ERC-4337 UserOperations and must not be touched until postOp.
+        uint256 bal       = balances[user];
+        uint256 lk        = locked[user];
+        uint256 available = bal > lk ? bal - lk : 0;
+        require(available >= usdcCost, "Paymaster: user underfunded");
+
+        balances[user] = bal - usdcCost;
         require(
             IERC20(usdc).transfer(feeRecipient, usdcCost),
             "Paymaster: fee transfer failed"

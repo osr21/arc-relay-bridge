@@ -55,17 +55,18 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 - Base Sepolia USDC: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - Fuji USDC: `0x5425890298aed601595a70AB815c96711a31Bc65`
 
-## Paymaster Addresses (deployed 2026-06-01 v4, evmVersion paris, ERC-4337 v0.7)
+## Paymaster Addresses (deployed 2026-06-01 v5, evmVersion paris, ERC-4337 v0.7)
 
 v4 fix: removed `nonReentrant` from `validatePaymasterUserOp` — ERC-7562 forbids global storage writes (_locked bool) for unstaked paymasters; Pimlico rejects such UserOps at simulation. `onlyEntryPoint` is sufficient protection (EntryPoint never re-enters validation).
+v5 fix: `deductGas` now checks available (unlocked) balance only — prevents double-charging a user when a pending UserOp has reserved funds concurrently.
 entryPoint is a `constant` (not immutable) — keeps single-immutable init pattern (`0x60a0`) for chain compatibility.
 
 | Chain | Address |
 |---|---|
-| Arc Testnet | `0x3fAC0e0F8d8BfE9498d06332582C48Dc32698D65` |
-| Ethereum Sepolia | `0x3068d2C54C76C26B9120DDEE063F43a6f874288F` |
-| Base Sepolia | `0xd9E34Aca62a16a58a4e7144130Be94bD908D368c` |
-| Avalanche Fuji | `0xe355E9dCdEAB37eA8fd81b9457Ad2C56d3eE9055` |
+| Arc Testnet | `0xfD06D288d481515a986DF28030AF013De290D76C` |
+| Ethereum Sepolia | `0xC9E9ba0bfE58FA438B8B6f2182d3ADA3669F9Eb4` |
+| Base Sepolia | `0xe355E9dCdEAB37eA8fd81b9457Ad2C56d3eE9055` |
+| Avalanche Fuji | `0x7C75A75B59b63871e1Bb47fA63e541F0e5975f93` |
 
 Re-deploy: `pnpm --filter @workspace/scripts run deploy-paymaster`
 Constructor: `(address usdc, address relayer, address feeRecipient, uint256 gasRate)` — 4 params; entryPoint is hardcoded constant.

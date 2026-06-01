@@ -17,6 +17,7 @@ import {
   encodeFunctionData,
   erc20Abi,
   parseAbi,
+  parseUnits,
   type Chain,
   type Hex,
   type Address,
@@ -131,9 +132,18 @@ export async function executeBridgeGasless(
     );
   }
 
-  const amountFloat = parseFloat(amount.trim());
+  const trimmedAmount = amount.trim();
+  if (/e/i.test(trimmedAmount)) throw new Error("Please enter a plain decimal number (e.g. 1.50).");
+  const amountFloat = parseFloat(trimmedAmount);
   if (isNaN(amountFloat) || amountFloat <= 0) throw new Error("Invalid amount.");
-  const burnUnits = BigInt(Math.round(amountFloat * 1_000_000));
+  const parts = trimmedAmount.split(".");
+  if (parts[1] && parts[1].length > 6) throw new Error("Amount cannot have more than 6 decimal places.");
+  let burnUnits: bigint;
+  try {
+    burnUnits = parseUnits(trimmedAmount as `${number}`, 6);
+  } catch {
+    throw new Error("Invalid amount entered.");
+  }
 
   const mintRecipient32 = toBytes32Address(recipient);
   const finalityThreshold = fromChain.minFinalityThreshold ?? 1000;
