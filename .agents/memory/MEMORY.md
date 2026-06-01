@@ -1,4 +1,5 @@
 - [YieldVault deployments](yield-vault-deployments.md) — deployed addresses for Arc/Base/Fuji; Sepolia needs more ETH to deploy
 - [Paymaster v2 deployment](paymaster-v2.md) — hardened contract addresses + key audit findings
+- [ERC-7562 nonReentrant on validatePaymasterUserOp](erc7562-paymaster-nonreentrant.md) — nonReentrant writes global _locked; ERC-7562 forbids this for unstaked paymasters; Pimlico rejects silently.
 ---
 - [Two-immutable constructor revert](two-immutable-revert.md) — 2-immutable (0x60c0 init) silently reverts on Arc/Base/Fuji; keep second var as `constant` to stay on 0x60a0.

@@ -236,7 +236,6 @@ contract Paymaster {
         uint256 maxCost
     )
         external
-        nonReentrant
         onlyEntryPoint
         whenNotPaused
         returns (bytes memory context, uint256 validationData)

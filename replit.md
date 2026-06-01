@@ -55,23 +55,23 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 - Base Sepolia USDC: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - Fuji USDC: `0x5425890298aed601595a70AB815c96711a31Bc65`
 
-## Paymaster Addresses (deployed 2026-06-01 v3, evmVersion paris, ERC-4337 v0.7)
+## Paymaster Addresses (deployed 2026-06-01 v4, evmVersion paris, ERC-4337 v0.7)
 
-Adds ERC-4337 v0.7 support (validatePaymasterUserOp + postOp), locked mapping for reservations, reentrancy guard.
+v4 fix: removed `nonReentrant` from `validatePaymasterUserOp` — ERC-7562 forbids global storage writes (_locked bool) for unstaked paymasters; Pimlico rejects such UserOps at simulation. `onlyEntryPoint` is sufficient protection (EntryPoint never re-enters validation).
 entryPoint is a `constant` (not immutable) — keeps single-immutable init pattern (`0x60a0`) for chain compatibility.
-Security hardening over v1: rescueTokens blocks USDC rescue, setGasRate capped at MAX_GAS_RATE (1 USDC/gas).
 
 | Chain | Address |
 |---|---|
 | Arc Testnet | `0x3fAC0e0F8d8BfE9498d06332582C48Dc32698D65` |
-| Ethereum Sepolia | `0xfF57188ea392bA5e91bdf675AAA55f2D8Ba9BdBe` |
-| Base Sepolia | `0x3649C856025FDC0F92EDAc2B52DD53452248bA33` |
-| Avalanche Fuji | `0xd9E34Aca62a16a58a4e7144130Be94bD908D368c` |
+| Ethereum Sepolia | `0x3068d2C54C76C26B9120DDEE063F43a6f874288F` |
+| Base Sepolia | `0xd9E34Aca62a16a58a4e7144130Be94bD908D368c` |
+| Avalanche Fuji | `0xe355E9dCdEAB37eA8fd81b9457Ad2C56d3eE9055` |
 
 Re-deploy: `pnpm --filter @workspace/scripts run deploy-paymaster`
 Constructor: `(address usdc, address relayer, address feeRecipient, uint256 gasRate)` — 4 params; entryPoint is hardcoded constant.
 Note: must compile with `evmVersion: "paris"` — Arc Testnet and Fuji reject PUSH0 (shanghai).
 Note: 2-immutable init pattern (`0x60c0`) silently reverts on Arc/Base/Fuji — always keep entryPoint as `constant`, not `immutable`.
+Note: validatePaymasterUserOp must NOT use nonReentrant — _locked is global storage, violates ERC-7562 for unstaked paymasters.
 
 ## FeeRouter v2 Addresses (deployed 2025-05-23, hardened)
 

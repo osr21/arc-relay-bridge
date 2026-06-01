@@ -34,9 +34,9 @@ export const USDC_ABI = [
  */
 export const PAYMASTER_ADDRESSES: Record<number, string> = {
   5042002:  "0x3fAC0e0F8d8BfE9498d06332582C48Dc32698D65", // Arc Testnet     (v3)
-  11155111: "0xfF57188ea392bA5e91bdf675AAA55f2D8Ba9BdBe", // Ethereum Sepolia (v3)
-  84532:    "0x3649C856025FDC0F92EDAc2B52DD53452248bA33", // Base Sepolia     (v3)
-  43113:    "0xd9E34Aca62a16a58a4e7144130Be94bD908D368c", // Avalanche Fuji   (v3)
+  11155111: "0x3068d2C54C76C26B9120DDEE063F43a6f874288F", // Ethereum Sepolia (v4)
+  84532:    "0xd9E34Aca62a16a58a4e7144130Be94bD908D368c", // Base Sepolia     (v4)
+  43113:    "0xe355E9dCdEAB37eA8fd81b9457Ad2C56d3eE9055", // Avalanche Fuji   (v4)
 };
 
 export function isPaymasterDeployed(chainId: number): boolean {
