@@ -113,3 +113,31 @@ GET /api/attest?domain={domain}&txHash={hash}
 GET /api/attest/hash/{messageHash}
   → proxies to Iris /v1/attestations/{messageHash}
 ```
+
+## Paymaster (ERC-4337 v0.7)
+
+The Paymaster allows users to pay gas fees in USDC rather than native tokens. See [docs/paymaster.md](./paymaster.md) for full architecture and admin documentation.
+
+### Deployed addresses (v3 — 2026-06-01)
+
+| Chain | Address |
+|---|---|
+| Arc Testnet | `0x3fAC0e0F8d8BfE9498d06332582C48Dc32698D65` |
+| Ethereum Sepolia | `0xfF57188ea392bA5e91bdf675AAA55f2D8Ba9BdBe` |
+| Base Sepolia | `0x3649C856025FDC0F92EDAc2B52DD53452248bA33` |
+| Avalanche Fuji | `0xd9E34Aca62a16a58a4e7144130Be94bD908D368c` |
+
+**ERC-4337 v0.7 EntryPoint (all chains):** `0x0000000071727De22E5E9d8BAf0edAc6f37da032`
+
+### Compilation constraint
+
+All Paymaster deployments use `evmVersion: "paris"`. Arc Testnet and Avalanche Fuji reject the `PUSH0` opcode (`0x5f`) introduced in Shanghai. Additionally, `entryPoint` must remain a `constant` (not `immutable`) — contracts with two or more `immutable` variables generate a `0x60c0` constructor init prefix that silently reverts on Arc Testnet, Base Sepolia, and Avalanche Fuji.
+
+### FeeRouter addresses (v2 — 2025-05-23)
+
+| Chain | Address |
+|---|---|
+| Arc Testnet | `0x8256a1e1f8971448b49dA0F55b8A1BB6557eA8FC` |
+| Ethereum Sepolia | `0x5B1F511ed4dF76f369671BF1c4aCF0dD84CC0804` |
+| Base Sepolia | `0x8d4B57eD464df10414Dde3ADC2E403a01ebc50d8` |
+| Avalanche Fuji | `0x64D160b7E91e78e52dFc0e8829640E32A919164C` |
