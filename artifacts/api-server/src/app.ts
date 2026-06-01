@@ -68,10 +68,20 @@ const paymasterLimiter = rateLimit({
   message: { error: "Too many paymaster requests — please wait a moment." },
 });
 
-app.use("/api/attest",    attestLimiter);
-app.use("/api/relay",     relayLimiter);
-app.use("/api/chains",    chainsLimiter);
-app.use("/api/paymaster", paymasterLimiter);
+// Oracle price: cached 30s server-side; 60/min per IP is generous.
+const oracleLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many oracle requests." },
+});
+
+app.use("/api/attest",       attestLimiter);
+app.use("/api/relay",        relayLimiter);
+app.use("/api/chains",       chainsLimiter);
+app.use("/api/paymaster",    paymasterLimiter);
+app.use("/api/oracle",       oracleLimiter);
 app.use("/api", router);
 
 export default app;
