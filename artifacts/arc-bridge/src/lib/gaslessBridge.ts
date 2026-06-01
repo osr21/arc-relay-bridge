@@ -40,8 +40,15 @@ const PAYMASTER_BALANCES_ABI = parseAbi([
   "function MAX_DEDUCTION_PER_TX() view returns (uint256)",
 ]);
 
-/** Minimum USDC balance (6 dec) the smart account must have in the Paymaster before bridging. */
-const MIN_PAYMASTER_BALANCE = 500_000n; // 0.5 USDC
+/** Hard cap the Paymaster enforces per UserOp (6 dec USDC). */
+const PAYMASTER_MAX_DEDUCTION = 10_000_000n; // 10 USDC
+
+/**
+ * Conservative total gas estimate for a batched approve+depositForBurn UserOp:
+ * callGasLimit ~250k + verificationGas ~100k + preVerification ~50k
+ * + paymasterVerification 50k + paymasterPostOp 50k = ~500k, +20% buffer = 600k.
+ */
+const ESTIMATED_USEROP_GAS = 600_000n;
 
 // ── ABIs ──────────────────────────────────────────────────────────────────────
 
@@ -150,19 +157,42 @@ export async function executeBridgeGasless(
     transport: http(CHAIN_RPC[fromChain.id]),
   });
 
-  const paymasterBalance = await preflight.readContract({
-    address: paymasterAddr as Address,
-    abi: PAYMASTER_BALANCES_ABI,
-    functionName: "balances",
-    args: [smartAccountAddr],
-  });
+  const [paymasterBalance, gasRate] = await Promise.all([
+    preflight.readContract({
+      address: paymasterAddr as Address,
+      abi: PAYMASTER_BALANCES_ABI,
+      functionName: "balances",
+      args: [smartAccountAddr],
+    }),
+    preflight.readContract({
+      address: paymasterAddr as Address,
+      abi: PAYMASTER_BALANCES_ABI,
+      functionName: "gasRate",
+    }),
+  ]);
 
-  if (paymasterBalance < MIN_PAYMASTER_BALANCE) {
-    const have = (Number(paymasterBalance) / 1e6).toFixed(6);
+  // Mirror the Paymaster's own maxUsdcCost logic:
+  //   maxUsdcCost = (maxCost / maxFeePerGas) * gasRate
+  // Since we don't know exact gas price yet, use ESTIMATED_USEROP_GAS * gasRate.
+  // If gasRate=0 the Paymaster falls back to MAX_DEDUCTION_PER_TX (10 USDC).
+  let minRequired: bigint;
+  if (gasRate === 0n) {
+    minRequired = PAYMASTER_MAX_DEDUCTION;
+  } else {
+    const estimated = ESTIMATED_USEROP_GAS * gasRate;
+    // Apply 50% buffer for gas price variance; cap at the Paymaster's hard limit.
+    const buffered = (estimated * 150n) / 100n;
+    minRequired = buffered < PAYMASTER_MAX_DEDUCTION ? buffered : PAYMASTER_MAX_DEDUCTION;
+  }
+
+  if (paymasterBalance < minRequired) {
+    const have = (Number(paymasterBalance) / 1e6).toFixed(2);
+    const need = (Number(minRequired) / 1e6).toFixed(2);
     throw new Error(
-      `Insufficient Paymaster balance for smart account ${smartAccountAddr.slice(0, 8)}…\n` +
-      `Have: ${have} USDC — need at least ${Number(MIN_PAYMASTER_BALANCE) / 1e6} USDC.\n` +
-      `Go to the Paymaster page → Gasless Bridge Setup and deposit USDC first.`
+      `Insufficient Paymaster balance for your smart account.\n` +
+      `Your smart account (${smartAccountAddr.slice(0, 10)}…) has ${have} USDC in the Paymaster ` +
+      `but needs at least ${need} USDC to cover gas.\n` +
+      `Go to the Paymaster page → Gasless Bridge Setup and top up your balance.`
     );
   }
   // ─────────────────────────────────────────────────────────────────────────
