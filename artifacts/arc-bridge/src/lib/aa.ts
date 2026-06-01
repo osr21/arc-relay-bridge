@@ -107,19 +107,19 @@ export async function createBridgeClient(chainId: number) {
         return {
           paymaster: paymasterAddr,
           paymasterData: "0x" as Hex,
-          // Keep limits tight — the Paymaster v3 validate/postOp are simple
-          // mapping reads + writes (~20-30k gas actual). 50k gives 2x headroom
-          // without inflating maxCost enough to exhaust even a small deposit.
-          paymasterVerificationGasLimit: 50_000n,
-          paymasterPostOpGasLimit:       50_000n,
+          // validatePaymasterUserOp makes 5 cold SLOADs + 2 cold SSTOREs
+          // (locked[user] 0→nonzero = 22k, _locked 0→1 = 22k) ≈ 60k total.
+          // 100k gives safe headroom without pushing maxUsdcCost over the 10 USDC cap.
+          paymasterVerificationGasLimit: 100_000n,
+          paymasterPostOpGasLimit:        80_000n,
         };
       },
       async getPaymasterData() {
         return {
           paymaster: paymasterAddr,
           paymasterData: "0x" as Hex,
-          paymasterVerificationGasLimit: 50_000n,
-          paymasterPostOpGasLimit:       50_000n,
+          paymasterVerificationGasLimit: 100_000n,
+          paymasterPostOpGasLimit:        80_000n,
         };
       },
     },

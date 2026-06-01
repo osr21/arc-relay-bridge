@@ -215,6 +215,7 @@ export default function BridgePage() {
       clearSession();
       await refreshBalances();
     } catch (err: unknown) {
+      console.error("[bridge error]", err);
       setBridgeStatus({
         step: "error",
         message: "Bridge failed",
