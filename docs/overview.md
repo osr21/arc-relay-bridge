@@ -31,6 +31,12 @@ User on Chain A                  Circle Iris API              User on Chain B
 
 The whole flow is non-custodial: at no point does the bridge hold user funds.
 
+## Gasless bridging (ERC-4337)
+
+On Ethereum Sepolia, Base Sepolia, and Avalanche Fuji, users can enable the **ERC-4337 gasless burn** toggle to bridge without holding any native gas token. Gas is paid in USDC via the deployed Paymaster v3 contracts, routed through [Pimlico](https://www.pimlico.io) bundlers. See [docs/paymaster.md](./paymaster.md) for setup details.
+
+Arc Testnet uses USDC as its native gas token and does not need the ERC-4337 path.
+
 ## Supported chains
 
 | Chain | CCTP Domain | Chain ID |
