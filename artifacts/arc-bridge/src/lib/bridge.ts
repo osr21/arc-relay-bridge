@@ -141,6 +141,20 @@ export function friendlyError(err: unknown): string {
     return "Transaction cancelled — you rejected the request in your wallet.";
   }
 
+  // ERC-4337 Paymaster validation failure — user hasn't funded their smart account
+  if (
+    msg.includes("validatePaymasterUserOp") ||
+    msg.includes("paymaster") && msg.includes("revert") ||
+    msg.includes("Insufficient Paymaster balance")
+  ) {
+    // Pass through structured messages from our pre-flight check as-is
+    if (msg.includes("Gasless Bridge Setup")) return msg.split("\n")[0];
+    return (
+      "Paymaster rejected the UserOperation — your smart account likely has no USDC " +
+      "deposited in the Paymaster. Go to the Paymaster page → Gasless Bridge Setup and deposit USDC first."
+    );
+  }
+
   // On-chain execution reverted (ethers v6 throws from wait() with CALL_EXCEPTION)
   if (
     code === "CALL_EXCEPTION" ||

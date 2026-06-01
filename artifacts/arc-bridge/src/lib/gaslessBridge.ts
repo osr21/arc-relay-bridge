@@ -20,6 +20,7 @@ import {
   type Chain,
   type Hex,
   type Address,
+  type PublicClient,
 } from "viem";
 import { sepolia, baseSepolia, avalancheFuji } from "viem/chains";
 import type { ChainConfig } from "./chains";
@@ -28,9 +29,19 @@ import { resumeBridge } from "./bridge";
 import {
   createBridgeClient,
   createSponsoredClient,
+  getSmartAccountAddress,
   isAASupported,
 } from "./aa";
 import { PAYMASTER_ADDRESSES } from "./paymaster";
+
+const PAYMASTER_BALANCES_ABI = parseAbi([
+  "function balances(address user) view returns (uint256)",
+  "function gasRate() view returns (uint256)",
+  "function MAX_DEDUCTION_PER_TX() view returns (uint256)",
+]);
+
+/** Minimum USDC balance (6 dec) the smart account must have in the Paymaster before bridging. */
+const MIN_PAYMASTER_BALANCE = 500_000n; // 0.5 USDC
 
 // ── ABIs ──────────────────────────────────────────────────────────────────────
 
@@ -121,7 +132,44 @@ export async function executeBridgeGasless(
 
   onStatus({
     step: "approving",
-    message: "Preparing smart account — connecting to bundler…",
+    message: "Preparing smart account — checking Paymaster balance…",
+  });
+
+  // ── Pre-flight: verify the smart account has enough in the Paymaster ──────
+  // The Paymaster's `balances` mapping is keyed by the ERC-4337 sender
+  // (SimpleAccount address), NOT by the MetaMask EOA. The sponsored deposit
+  // on the Paymaster page stores USDC under the SimpleAccount address.
+  const paymasterAddr = (PAYMASTER_ADDRESSES as Record<number, string | undefined>)[fromChain.id];
+  if (!paymasterAddr) throw new Error(`No Paymaster deployed for ${fromChain.name}.`);
+
+  const smartAccountAddr = await getSmartAccountAddress(fromChain.id);
+
+  // Use an existing publicClient helper or build one inline.
+  const preflight: PublicClient = createPublicClient({
+    chain: (CHAIN_VIEM_MAP as Record<number, Chain>)[fromChain.id],
+    transport: http(CHAIN_RPC[fromChain.id]),
+  });
+
+  const paymasterBalance = await preflight.readContract({
+    address: paymasterAddr as Address,
+    abi: PAYMASTER_BALANCES_ABI,
+    functionName: "balances",
+    args: [smartAccountAddr],
+  });
+
+  if (paymasterBalance < MIN_PAYMASTER_BALANCE) {
+    const have = (Number(paymasterBalance) / 1e6).toFixed(6);
+    throw new Error(
+      `Insufficient Paymaster balance for smart account ${smartAccountAddr.slice(0, 8)}…\n` +
+      `Have: ${have} USDC — need at least ${Number(MIN_PAYMASTER_BALANCE) / 1e6} USDC.\n` +
+      `Go to the Paymaster page → Gasless Bridge Setup and deposit USDC first.`
+    );
+  }
+  // ─────────────────────────────────────────────────────────────────────────
+
+  onStatus({
+    step: "approving",
+    message: "Connecting to bundler…",
   });
 
   const client = await createBridgeClient(fromChain.id);
