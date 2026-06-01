@@ -9,8 +9,8 @@ import { isAASupported, getSmartAccountAddress } from "@/lib/aa";
 import { depositToPaymasterGasless } from "@/lib/gaslessBridge";
 import { parseUnits } from "viem";
 import {
-  PaymasterBalance, PaymasterStatus,
-  fetchAllBalances, fetchWalletBalance,
+  PaymasterBalance, PaymasterStatus, SmartAccountPaymasterBalance,
+  fetchAllBalances, fetchWalletBalance, fetchSmartAccountPaymasterBalance,
   depositToPaymaster, withdrawFromPaymaster,
   fmtUsdc, friendlyError, isPaymasterDeployed,
 } from "@/lib/paymaster";
@@ -377,6 +377,7 @@ export default function PaymasterPage() {
   // Gasless Bridge — smart account addresses + deposit states
   const [smartAccounts, setSmartAccounts] = useState<Record<number, string>>({});
   const [smartAccLoading, setSmartAccLoading] = useState(false);
+  const [smartAccBalances, setSmartAccBalances] = useState<Record<number, SmartAccountPaymasterBalance>>({});
   const [gaslessDepositStep,   setGaslessDepositStep]   = useState<Record<number, string>>({});
   const [gaslessDepositMsg,    setGaslessDepositMsg]    = useState<Record<number, string>>({});
   const [gaslessDepositTx,     setGaslessDepositTx]     = useState<Record<number, string>>({});
@@ -435,11 +436,23 @@ export default function PaymasterPage() {
       const results = await Promise.allSettled(
         supported.map(async (c) => ({ chainId: c.id, addr: await getSmartAccountAddress(c.id) }))
       );
-      const map: Record<number, string> = {};
+      const addrMap: Record<number, string> = {};
       for (const r of results) {
-        if (r.status === "fulfilled") map[r.value.chainId] = r.value.addr;
+        if (r.status === "fulfilled") addrMap[r.value.chainId] = r.value.addr;
       }
-      setSmartAccounts(map);
+      setSmartAccounts(addrMap);
+
+      // Fetch Paymaster balances for each smart account (balance / locked / available).
+      const balResults = await Promise.allSettled(
+        supported
+          .filter((c) => addrMap[c.id])
+          .map(async (c) => ({ chainId: c.id, bal: await fetchSmartAccountPaymasterBalance(c, addrMap[c.id]) }))
+      );
+      const balMap: Record<number, SmartAccountPaymasterBalance> = {};
+      for (const r of balResults) {
+        if (r.status === "fulfilled") balMap[r.value.chainId] = r.value.bal;
+      }
+      setSmartAccBalances(balMap);
     } catch {
       // non-fatal
     } finally {
@@ -463,6 +476,7 @@ export default function PaymasterPage() {
       setGaslessDepositTx((s) => ({ ...s, [chain.id]: txHash }));
       setGaslessDepositStep((s) => ({ ...s, [chain.id]: "done" }));
       void load(walletAddress ?? undefined);
+      void loadSmartAccounts();
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Deposit failed";
       setGaslessDepositMsg((s) => ({ ...s, [chain.id]: msg }));
@@ -651,20 +665,39 @@ export default function PaymasterPage() {
                 </div>
               )}
               {chains.filter((c) => isAASupported(c.id)).map((chain) => {
-                const saAddr = smartAccounts[chain.id];
-                const step   = gaslessDepositStep[chain.id] ?? "";
-                const msg    = gaslessDepositMsg[chain.id] ?? "";
-                const txHash = gaslessDepositTx[chain.id] ?? "";
-                const busy   = step === "depositing";
-                const done   = step === "done";
-                const error  = step === "error";
+                const saAddr  = smartAccounts[chain.id];
+                const saBal   = smartAccBalances[chain.id];
+                const step    = gaslessDepositStep[chain.id] ?? "";
+                const msg     = gaslessDepositMsg[chain.id] ?? "";
+                const txHash  = gaslessDepositTx[chain.id] ?? "";
+                const busy    = step === "depositing";
+                const done    = step === "done";
+                const error   = step === "error";
+                const hasLock = saBal && saBal.locked > 0n;
                 return (
                   <div key={chain.id} className="rounded-xl bg-white/5 border border-white/8 p-4 space-y-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-[11px] font-bold text-white/70">
-                        {chain.name.charAt(0)}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-[11px] font-bold text-white/70">
+                          {chain.name.charAt(0)}
+                        </div>
+                        <div className="font-semibold text-sm text-white/85">{chain.name}</div>
                       </div>
-                      <div className="font-semibold text-sm text-white/85">{chain.name}</div>
+                      {saBal !== undefined && (
+                        <div className={cn(
+                          "text-[11px] font-semibold px-2.5 py-1 rounded-lg border",
+                          saBal.available > 0n
+                            ? "bg-emerald-950/40 border-emerald-500/25 text-emerald-300"
+                            : "bg-white/5 border-white/10 text-white/40"
+                        )}>
+                          {fmtUsdc(saBal.available)} USDC available
+                          {hasLock && (
+                            <span className="ml-1.5 text-amber-400/80">
+                              ({fmtUsdc(saBal.locked)} reserved)
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
 
                     {saAddr ? (

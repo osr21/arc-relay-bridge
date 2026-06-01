@@ -36,6 +36,7 @@ import { PAYMASTER_ADDRESSES } from "./paymaster";
 
 const PAYMASTER_BALANCES_ABI = parseAbi([
   "function balances(address user) view returns (uint256)",
+  "function locked(address user) view returns (uint256)",
   "function gasRate() view returns (uint256)",
   "function MAX_DEDUCTION_PER_TX() view returns (uint256)",
 ]);
@@ -157,7 +158,7 @@ export async function executeBridgeGasless(
     transport: http(CHAIN_RPC[fromChain.id]),
   });
 
-  const [paymasterBalance, gasRate] = await Promise.all([
+  const [paymasterBalance, lockedAmount, gasRate] = await Promise.all([
     preflight.readContract({
       address: paymasterAddr as Address,
       abi: PAYMASTER_BALANCES_ABI,
@@ -167,9 +168,21 @@ export async function executeBridgeGasless(
     preflight.readContract({
       address: paymasterAddr as Address,
       abi: PAYMASTER_BALANCES_ABI,
+      functionName: "locked",
+      args: [smartAccountAddr],
+    }),
+    preflight.readContract({
+      address: paymasterAddr as Address,
+      abi: PAYMASTER_BALANCES_ABI,
       functionName: "gasRate",
     }),
   ]);
+
+  // Mirror exactly what validatePaymasterUserOp checks:
+  //   available = balances[user] - locked[user]
+  // locked is non-zero only when a prior UserOp is in-flight on-chain; stale
+  // locks are normally released by postOp, but we mirror the check faithfully.
+  const available = paymasterBalance > lockedAmount ? paymasterBalance - lockedAmount : 0n;
 
   // Mirror the Paymaster's own maxUsdcCost logic:
   //   maxUsdcCost = (maxCost / maxFeePerGas) * gasRate
@@ -185,13 +198,15 @@ export async function executeBridgeGasless(
     minRequired = buffered < PAYMASTER_MAX_DEDUCTION ? buffered : PAYMASTER_MAX_DEDUCTION;
   }
 
-  if (paymasterBalance < minRequired) {
-    const have = (Number(paymasterBalance) / 1e6).toFixed(2);
+  if (available < minRequired) {
+    const have = (Number(available) / 1e6).toFixed(2);
     const need = (Number(minRequired) / 1e6).toFixed(2);
+    const lockedNote = lockedAmount > 0n
+      ? ` (${(Number(paymasterBalance) / 1e6).toFixed(2)} deposited, ${(Number(lockedAmount) / 1e6).toFixed(2)} reserved by a pending op)`
+      : "";
     throw new Error(
       `Insufficient Paymaster balance for your smart account.\n` +
-      `Your smart account (${smartAccountAddr.slice(0, 10)}…) has ${have} USDC in the Paymaster ` +
-      `but needs at least ${need} USDC to cover gas.\n` +
+      `Available: ${have} USDC${lockedNote} — need at least ${need} USDC to cover gas.\n` +
       `Go to the Paymaster page → Gasless Bridge Setup and top up your balance.`
     );
   }

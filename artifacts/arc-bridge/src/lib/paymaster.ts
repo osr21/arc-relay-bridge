@@ -11,6 +11,7 @@ import { getProvider, switchToChain, friendlyError } from "./bridge";
 
 export const PAYMASTER_ABI = [
   "function balances(address user) view returns (uint256)",
+  "function locked(address user) view returns (uint256)",
   "function gasRate() view returns (uint256)",
   "function paused() view returns (bool)",
   "function MAX_DEDUCTION_PER_TX() view returns (uint256)",
@@ -100,6 +101,37 @@ export async function fetchAllBalances(userAddress: string): Promise<PaymasterBa
       ? r.value
       : { chain: chains[i], paymasterAddress: "", balance: 0n, gasRate: 0n, paused: false, isDeployed: isPaymasterDeployed(chains[i].id) }
   );
+}
+
+export interface SmartAccountPaymasterBalance {
+  balance: bigint;
+  locked: bigint;
+  available: bigint;
+}
+
+/**
+ * Fetch a smart account's Paymaster balance on one chain.
+ * Returns { balance, locked, available } where available = balance - locked.
+ * This mirrors exactly what validatePaymasterUserOp checks.
+ */
+export async function fetchSmartAccountPaymasterBalance(
+  chain: ChainConfig,
+  smartAccountAddr: string
+): Promise<SmartAccountPaymasterBalance> {
+  const addr = PAYMASTER_ADDRESSES[chain.id];
+  if (!isPaymasterDeployed(chain.id)) {
+    return { balance: 0n, locked: 0n, available: 0n };
+  }
+  const rpcUrl  = chain.rpcUrl ?? getChainRpc(chain.id);
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const contract = new ethers.Contract(addr, PAYMASTER_ABI, provider);
+
+  const [balance, locked] = await Promise.all([
+    contract.balances(smartAccountAddr) as Promise<bigint>,
+    contract.locked(smartAccountAddr)   as Promise<bigint>,
+  ]);
+  const available = balance > locked ? balance - locked : 0n;
+  return { balance, locked, available };
 }
 
 /** Fetch the user's wallet USDC balance on a specific chain. */
