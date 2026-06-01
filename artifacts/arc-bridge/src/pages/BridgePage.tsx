@@ -41,6 +41,7 @@ export default function BridgePage() {
   const [fromBalance, setFromBalance]     = useState<string>("—");
   const [toBalance, setToBalance]         = useState<string>("—");
   const [loadingBalances, setLoadingBalances] = useState(false);
+  const [oraclePrice, setOraclePrice]     = useState<string | null>(null);
 
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({
     step: "idle",
@@ -82,6 +83,21 @@ export default function BridgePage() {
       if (from && to) setResumeSession(session);
       else clearSession();
     }
+  }, []);
+
+  // Poll Band Protocol oracle price (Arc Testnet) every 30 seconds
+  useEffect(() => {
+    async function fetchOraclePrice() {
+      try {
+        const res = await fetch("/api/oracle/price");
+        if (!res.ok) return;
+        const data = await res.json() as { rateFormatted: string };
+        if (data.rateFormatted) setOraclePrice(`$${data.rateFormatted}`);
+      } catch { /* non-fatal */ }
+    }
+    void fetchOraclePrice();
+    const interval = setInterval(fetchOraclePrice, 30_000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -350,9 +366,17 @@ export default function BridgePage() {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-white font-bold text-lg">Bridge USDC</h2>
-                  <p className="text-slate-400 text-xs mt-0.5">
-                    Burn on source · Attest · Mint natively on destination
-                  </p>
+                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                    <p className="text-slate-400 text-xs">
+                      Burn on source · Attest · Mint natively on destination
+                    </p>
+                    {oraclePrice && (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-400/80 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
+                        USDC {oraclePrice} · Band
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <button
                   onClick={refreshBalances}

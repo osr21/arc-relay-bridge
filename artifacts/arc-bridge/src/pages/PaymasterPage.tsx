@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   Zap, RefreshCw, Wallet, AlertCircle, CheckCircle2,
-  ShieldCheck, ArrowDownCircle, ArrowUpCircle, Info,
+  ShieldCheck, ArrowDownCircle, ArrowUpCircle, Info, Cpu, ExternalLink,
 } from "lucide-react";
 import { CHAINS, ChainConfig } from "@/lib/chains";
 import { connectWallet } from "@/lib/bridge";
@@ -479,6 +479,67 @@ export default function PaymasterPage() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* ERC-4337 Account Abstraction */}
+        <div className="rounded-2xl border border-blue-500/20 bg-blue-950/10 p-5 space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-2 text-blue-300 font-semibold text-sm">
+              <Cpu className="w-4 h-4" />
+              ERC-4337 Account Abstraction
+            </div>
+            <span className="flex items-center gap-1.5 text-[11px] font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30 px-3 py-1 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+              v0.7 Compatible
+            </span>
+          </div>
+
+          <p className="text-xs text-white/55 leading-relaxed">
+            This Paymaster implements the ERC-4337 v0.7 <code className="bg-white/10 px-1.5 py-0.5 rounded text-white/80">IPaymaster</code> interface.
+            Any smart account wallet using <strong className="text-white/75">Pimlico</strong>,{" "}
+            <strong className="text-white/75">ZeroDev</strong>, or another ERC-4337 bundler can
+            automatically use USDC deposits here to pay gas — no ETH required on any supported chain.
+          </p>
+
+          <div className="grid sm:grid-cols-2 gap-3 text-xs">
+            <div className="rounded-xl bg-white/5 border border-white/8 px-4 py-3 space-y-1.5">
+              <div className="text-white/40 uppercase tracking-wider text-[10px] font-semibold">EntryPoint (v0.7)</div>
+              <div className="font-mono text-white/80 text-[11px] break-all">
+                0x0000000071727De22E5E9d8BAf0edAc6f37da032
+              </div>
+              <div className="text-white/35 text-[10px]">CREATE2 — identical address on all EVM chains</div>
+            </div>
+            <div className="rounded-xl bg-white/5 border border-white/8 px-4 py-3 space-y-2">
+              <div className="text-white/40 uppercase tracking-wider text-[10px] font-semibold">Compatible bundlers</div>
+              {[
+                { name: "Pimlico", url: "https://www.pimlico.io" },
+                { name: "ZeroDev", url: "https://zerodev.app" },
+                { name: "Alchemy AA",  url: "https://accountkit.alchemy.com" },
+              ].map((b) => (
+                <a key={b.name} href={b.url} target="_blank" rel="noopener noreferrer"
+                  className="flex items-center justify-between text-white/60 hover:text-white/90 transition-colors">
+                  <span className="font-medium">{b.name}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-white/5 border border-white/8 px-4 py-3 space-y-2 text-xs">
+            <div className="text-white/40 uppercase tracking-wider text-[10px] font-semibold">How it works with AA wallets</div>
+            <div className="grid sm:grid-cols-3 gap-2 text-white/55">
+              {[
+                { label: "validatePaymasterUserOp", desc: "Reserves max USDC cost; blocks withdrawal of reserved funds during the op." },
+                { label: "postOp", desc: "Releases the reservation and charges actual gas cost (gas units × rate, capped at 10 USDC)." },
+                { label: "Fallback: deductGas", desc: "Legacy relayer path still works alongside ERC-4337 for meta-transaction compatibility." },
+              ].map((item) => (
+                <div key={item.label} className="space-y-1">
+                  <code className="bg-white/10 px-1.5 py-0.5 rounded text-white/80 text-[10px]">{item.label}</code>
+                  <div>{item.desc}</div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
 
