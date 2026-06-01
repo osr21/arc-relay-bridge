@@ -32,10 +32,10 @@ export const USDC_ABI = [
  * Keyed by chain ID. Empty string = not yet deployed on that chain.
  */
 export const PAYMASTER_ADDRESSES: Record<number, string> = {
-  5042002:  "0x05FCDBf7E7b7c50929D7ccdd32000be30a796E60", // Arc Testnet
-  11155111: "0xE0b2557C27cc358C27376A96493Fa97c3EC58b31", // Ethereum Sepolia
-  84532:    "0x57a298356E6B2A98d44C68Ff92B7372D639684E0", // Base Sepolia
-  43113:    "0x06e2AF4CD0B05B5c415fBe7Ce256be41a6D8D7F4", // Avalanche Fuji
+  5042002:  "0xbA96a53a6FE0DA9e6f28A1da672ac3610A5b9f9e", // Arc Testnet     (v3)
+  11155111: "0xE0b2557C27cc358C27376A96493Fa97c3EC58b31", // Ethereum Sepolia (v2 — pending Sepolia ETH for v3 redeploy)
+  84532:    "0xa2C67EFacBE547AfF1e67534EC84E9AE25bD15B7", // Base Sepolia     (v3)
+  43113:    "0x3649C856025FDC0F92EDAc2B52DD53452248bA33", // Avalanche Fuji   (v3)
 };
 
 export function isPaymasterDeployed(chainId: number): boolean {

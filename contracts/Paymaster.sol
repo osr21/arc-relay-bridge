@@ -41,7 +41,9 @@ interface IERC20 {
  */
 contract Paymaster {
     address public immutable usdc;
-    address public immutable entryPoint;
+
+    /// @dev ERC-4337 v0.7 EntryPoint — deployed via CREATE2, same on every EVM chain.
+    address public constant entryPoint = 0x0000000071727De22E5E9d8BAf0edAc6f37da032;
 
     address public owner;
     address public pendingOwner;
@@ -135,25 +137,21 @@ contract Paymaster {
      * @param _relayer       Trusted relayer address allowed to call deductGas.
      * @param _feeRecipient  Wallet that receives USDC deducted for gas costs.
      * @param _gasRate       Initial USDC-per-gas-unit rate (6 decimals).
-     * @param _entryPoint    ERC-4337 v0.7 EntryPoint contract (0x0000000071727De22E5E9d8BAf0edAc6f37da032).
      */
     constructor(
         address _usdc,
         address _relayer,
         address _feeRecipient,
-        uint256 _gasRate,
-        address _entryPoint
+        uint256 _gasRate
     ) {
         require(_usdc         != address(0), "Paymaster: zero usdc");
         require(_relayer      != address(0), "Paymaster: zero relayer");
         require(_feeRecipient != address(0), "Paymaster: zero fee recipient");
-        require(_entryPoint   != address(0), "Paymaster: zero entryPoint");
 
         usdc         = _usdc;
         relayer      = _relayer;
         feeRecipient = _feeRecipient;
         gasRate      = _gasRate;
-        entryPoint   = _entryPoint;
         owner        = msg.sender;
     }
 
@@ -228,7 +226,6 @@ contract Paymaster {
      *         by a concurrent withdraw or another UserOperation.
      *
      * @param userOp   The packed UserOperation being validated.
-     * @param          userOpHash — unused (Circle Iris attests off-chain).
      * @param maxCost  Maximum native-token cost of the UserOperation (wei).
      * @return context   ABI-encoded (user, reservedAmount) forwarded to postOp.
      * @return validationData  0 = valid (no signature check, no expiry).

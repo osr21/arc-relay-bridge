@@ -55,20 +55,23 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 - Base Sepolia USDC: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - Fuji USDC: `0x5425890298aed601595a70AB815c96711a31Bc65`
 
-## Paymaster Addresses (deployed 2025-05-31 v2, evmVersion paris, hardened)
+## Paymaster Addresses (deployed 2026-06-01 v3, evmVersion paris, ERC-4337 v0.7)
 
-Security hardening over v1: rescueTokens blocks USDC rescue (protects deposits), setGasRate capped at MAX_GAS_RATE (1 USDC/gas).
+Adds ERC-4337 v0.7 support (validatePaymasterUserOp + postOp), locked mapping for reservations, reentrancy guard.
+entryPoint is a `constant` (not immutable) — keeps single-immutable init pattern (`0x60a0`) for chain compatibility.
+Security hardening over v1: rescueTokens blocks USDC rescue, setGasRate capped at MAX_GAS_RATE (1 USDC/gas).
 
 | Chain | Address |
 |---|---|
-| Arc Testnet | `0x05FCDBf7E7b7c50929D7ccdd32000be30a796E60` |
-| Ethereum Sepolia | `0xE0b2557C27cc358C27376A96493Fa97c3EC58b31` |
-| Base Sepolia | `0x57a298356E6B2A98d44C68Ff92B7372D639684E0` |
-| Avalanche Fuji | `0x06e2AF4CD0B05B5c415fBe7Ce256be41a6D8D7F4` |
+| Arc Testnet | `0xbA96a53a6FE0DA9e6f28A1da672ac3610A5b9f9e` |
+| Ethereum Sepolia | `0xE0b2557C27cc358C27376A96493Fa97c3EC58b31` *(v2 — Sepolia needs ETH funding for v3 redeploy)* |
+| Base Sepolia | `0xa2C67EFacBE547AfF1e67534EC84E9AE25bD15B7` |
+| Avalanche Fuji | `0x3649C856025FDC0F92EDAc2B52DD53452248bA33` |
 
 Re-deploy: `pnpm --filter @workspace/scripts run deploy-paymaster`
-Constructor: `(address usdc, address relayer, address feeRecipient, uint256 gasRate)`
+Constructor: `(address usdc, address relayer, address feeRecipient, uint256 gasRate)` — 4 params; entryPoint is hardcoded constant.
 Note: must compile with `evmVersion: "paris"` — Arc Testnet and Fuji reject PUSH0 (shanghai).
+Note: 2-immutable init pattern (`0x60c0`) silently reverts on Arc/Base/Fuji — always keep entryPoint as `constant`, not `immutable`.
 
 ## FeeRouter v2 Addresses (deployed 2025-05-23, hardened)
 
