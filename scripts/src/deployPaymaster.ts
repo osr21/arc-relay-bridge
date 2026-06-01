@@ -1,8 +1,13 @@
 /**
- * Deploy Paymaster to all configured chains.
+ * Deploy Paymaster to all configured chains (or a subset).
  *
  * Usage:
  *   pnpm --filter @workspace/scripts run deploy-paymaster
+ *   pnpm --filter @workspace/scripts run deploy-paymaster -- --only sepolia
+ *   pnpm --filter @workspace/scripts run deploy-paymaster -- --only arc,fuji
+ *
+ * --only  Comma-separated list of chain name fragments (case-insensitive) to deploy.
+ *         Unmatched chains are skipped without error.
  *
  * Reads from environment:
  *   DEPLOYER_PRIVATE_KEY  — deployer wallet private key (needs gas on each chain)
@@ -69,6 +74,8 @@ interface ChainTarget {
   chainId: number;
   explorerUrl: string;
   usdc: string;
+  /** Override gasLimit for this chain. Omit to let ethers.js estimate. */
+  gasLimit?: number;
 }
 
 const CHAINS: ChainTarget[] = [
@@ -78,6 +85,7 @@ const CHAINS: ChainTarget[] = [
     chainId: 5042002,
     explorerUrl: "https://testnet.arcscan.app",
     usdc: "0x3600000000000000000000000000000000000000",
+    gasLimit: 3_000_000,
   },
   {
     name: "Ethereum Sepolia",
@@ -85,6 +93,8 @@ const CHAINS: ChainTarget[] = [
     chainId: 11155111,
     explorerUrl: "https://sepolia.etherscan.io",
     usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
+    // No gasLimit override — let ethers estimate. Actual deploy uses ~1.8M gas;
+    // the 3M hardcoded limit causes pre-flight failures when wallet has <0.075 ETH.
   },
   {
     name: "Base Sepolia",
@@ -92,6 +102,7 @@ const CHAINS: ChainTarget[] = [
     chainId: 84532,
     explorerUrl: "https://sepolia.basescan.org",
     usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+    gasLimit: 3_000_000,
   },
   {
     name: "Avalanche Fuji",
@@ -99,6 +110,7 @@ const CHAINS: ChainTarget[] = [
     chainId: 43113,
     explorerUrl: "https://testnet.snowtrace.io",
     usdc: "0x5425890298aed601595a70AB815c96711a31Bc65",
+    gasLimit: 3_000_000,
   },
 ];
 
@@ -138,10 +150,13 @@ async function deployToChain(
   console.log(`   EntryPoint    : ${ENTRY_POINT_V07}  (ERC-4337 v0.7)`);
 
   // Deployer address is also the initial relayer so the contract is immediately usable.
-  // Explicit gasLimit bypasses estimateGas (which some testnet RPCs reject with null revert data).
+  // Some testnet RPCs (Arc, Base, Fuji) reject estimateGas with null revert data, so we use
+  // an explicit gasLimit for those chains. Sepolia uses auto-estimation (gasLimit omitted) to
+  // avoid pre-flight balance failures when the wallet has <0.075 ETH.
+  const deployOverrides = chain.gasLimit !== undefined ? { gasLimit: chain.gasLimit } : {};
   const contract = await factory.deploy(
     chain.usdc, address, feeRecipient, GAS_RATE,
-    { gasLimit: 3_000_000 }
+    deployOverrides
   );
   const deployed = await contract.waitForDeployment();
   const addr     = await deployed.getAddress();
@@ -165,16 +180,31 @@ async function main() {
     throw new Error(`FEE_RECIPIENT is not a valid address: ${feeRecipient}`);
   }
 
+  // Parse --only flag: --only sepolia  or  --only arc,fuji
+  const onlyIdx = process.argv.indexOf("--only");
+  const onlyFilter: string[] | null = onlyIdx !== -1
+    ? process.argv[onlyIdx + 1].toLowerCase().split(",").map((s) => s.trim())
+    : null;
+
+  const chains = onlyFilter
+    ? CHAINS.filter((c) => onlyFilter.some((f) => c.name.toLowerCase().includes(f)))
+    : CHAINS;
+
+  if (onlyFilter && chains.length === 0) {
+    throw new Error(`--only filter "${onlyFilter.join(",")}" matched no chains. Available: ${CHAINS.map((c) => c.name).join(", ")}`);
+  }
+
   console.log("🚀 Paymaster Deployment");
   console.log("════════════════════════════════════════════════");
   console.log(`Fee recipient : ${feeRecipient}`);
   console.log(`Gas rate      : ${GAS_RATE} USDC-units per gas unit`);
   console.log(`Max deduction : 10 USDC per transaction`);
+  if (onlyFilter) console.log(`Chains filter : ${chains.map((c) => c.name).join(", ")}`);
 
   const deployments: Record<string, string> = {};
   const failed: string[] = [];
 
-  for (const chain of CHAINS) {
+  for (const chain of chains) {
     try {
       deployments[chain.chainId.toString()] = await deployToChain(chain, privateKey, feeRecipient);
     } catch (err) {
