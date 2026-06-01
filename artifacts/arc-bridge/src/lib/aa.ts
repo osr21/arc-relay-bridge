@@ -89,10 +89,19 @@ export async function createBridgeClient(chainId: number) {
   const account = await getSimpleAccount(chainId);
   const url = bundlerUrl(chainId);
 
+  // Use Pimlico to fetch live gas prices — required before paymaster validation.
+  const pimlico = createPimlicoClient({
+    transport: http(url),
+    entryPoint: ENTRY_POINT,
+  });
+
   return createSmartAccountClient({
     account,
     chain,
     bundlerTransport: http(url),
+    userOperation: {
+      estimateFeesPerGas: async () => (await pimlico.getUserOperationGasPrice()).fast,
+    },
     paymaster: {
       async getPaymasterStubData() {
         return {
@@ -124,6 +133,10 @@ export async function createSponsoredClient(chainId: number) {
   const account = await getSimpleAccount(chainId);
   const url = bundlerUrl(chainId);
 
+  // pimlico is used both as the paymaster (pm_getPaymasterStubData / pm_getPaymasterData)
+  // AND to fetch gas prices via pimlico_getUserOperationGasPrice.
+  // Gas prices must be populated before pm_getPaymasterStubData is called — this
+  // is why estimateFeesPerGas is wired up explicitly here.
   const pimlico = createPimlicoClient({
     transport: http(url),
     entryPoint: ENTRY_POINT,
@@ -133,6 +146,9 @@ export async function createSponsoredClient(chainId: number) {
     account,
     chain,
     bundlerTransport: http(url),
+    userOperation: {
+      estimateFeesPerGas: async () => (await pimlico.getUserOperationGasPrice()).fast,
+    },
     paymaster: pimlico,
   });
 }
