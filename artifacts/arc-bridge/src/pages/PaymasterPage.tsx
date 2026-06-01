@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback } from "react";
 import {
   Zap, RefreshCw, Wallet, AlertCircle, CheckCircle2,
-  ShieldCheck, ArrowDownCircle, ArrowUpCircle, Info, Cpu, ExternalLink,
+  ShieldCheck, ArrowDownCircle, ArrowUpCircle, Info, Cpu, ExternalLink, Layers,
 } from "lucide-react";
 import { CHAINS, ChainConfig } from "@/lib/chains";
 import { connectWallet } from "@/lib/bridge";
+import { isAASupported, getSmartAccountAddress } from "@/lib/aa";
+import { depositToPaymasterGasless } from "@/lib/gaslessBridge";
+import { parseUnits } from "viem";
 import {
   PaymasterBalance, PaymasterStatus,
   fetchAllBalances, fetchWalletBalance,
@@ -371,6 +374,14 @@ export default function PaymasterPage() {
   const [depositChain,  setDepositChain]  = useState<ChainConfig | null>(null);
   const [withdrawChain, setWithdrawChain] = useState<ChainConfig | null>(null);
 
+  // Gasless Bridge — smart account addresses + deposit states
+  const [smartAccounts, setSmartAccounts] = useState<Record<number, string>>({});
+  const [smartAccLoading, setSmartAccLoading] = useState(false);
+  const [gaslessDepositStep,   setGaslessDepositStep]   = useState<Record<number, string>>({});
+  const [gaslessDepositMsg,    setGaslessDepositMsg]    = useState<Record<number, string>>({});
+  const [gaslessDepositTx,     setGaslessDepositTx]     = useState<Record<number, string>>({});
+  const [gaslessDepositAmount, setGaslessDepositAmount] = useState<Record<number, string>>({});
+
   const chains = Object.values(CHAINS) as ChainConfig[];
 
   const totalGasBalance = balances.reduce((s, b) => s + b.balance, 0n);
@@ -413,6 +424,50 @@ export default function PaymasterPage() {
     if (chainId !== undefined) setWalletChainId(chainId);
     void load(addr);
     void loadWalletBals(addr);
+    void loadSmartAccounts();
+  }
+
+  const loadSmartAccounts = useCallback(async () => {
+    const supported = chains.filter((c) => isAASupported(c.id));
+    if (!supported.length) return;
+    setSmartAccLoading(true);
+    try {
+      const results = await Promise.allSettled(
+        supported.map(async (c) => ({ chainId: c.id, addr: await getSmartAccountAddress(c.id) }))
+      );
+      const map: Record<number, string> = {};
+      for (const r of results) {
+        if (r.status === "fulfilled") map[r.value.chainId] = r.value.addr;
+      }
+      setSmartAccounts(map);
+    } catch {
+      // non-fatal
+    } finally {
+      setSmartAccLoading(false);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function handleGaslessDeposit(chain: ChainConfig) {
+    const amtStr = gaslessDepositAmount[chain.id] ?? "";
+    const amt = parseFloat(amtStr);
+    if (!amtStr || isNaN(amt) || amt <= 0) return;
+    setGaslessDepositStep((s) => ({ ...s, [chain.id]: "depositing" }));
+    setGaslessDepositMsg((s) => ({ ...s, [chain.id]: "" }));
+    setGaslessDepositTx((s) => ({ ...s, [chain.id]: "" }));
+    try {
+      const amountUnits = parseUnits(amtStr, 6);
+      const txHash = await depositToPaymasterGasless(chain, amountUnits, (step, msg, tx) => {
+        setGaslessDepositMsg((s) => ({ ...s, [chain.id]: msg }));
+        if (tx) setGaslessDepositTx((s) => ({ ...s, [chain.id]: tx }));
+      });
+      setGaslessDepositTx((s) => ({ ...s, [chain.id]: txHash }));
+      setGaslessDepositStep((s) => ({ ...s, [chain.id]: "done" }));
+      void load(walletAddress ?? undefined);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Deposit failed";
+      setGaslessDepositMsg((s) => ({ ...s, [chain.id]: msg }));
+      setGaslessDepositStep((s) => ({ ...s, [chain.id]: "error" }));
+    }
   }
 
   const depositModalBalance = depositChain ? (walletBals[depositChain.id] ?? null) : null;
@@ -541,6 +596,138 @@ export default function PaymasterPage() {
               ))}
             </div>
           </div>
+        </div>
+
+        {/* Gasless Bridge Setup — Smart Account Deposit */}
+        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-950/10 p-5 space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-3">
+            <div className="flex items-center gap-2 text-emerald-300 font-semibold text-sm">
+              <Layers className="w-4 h-4" />
+              Gasless Bridge Setup
+            </div>
+            <span className="flex items-center gap-1.5 text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-3 py-1 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              Pimlico-Sponsored Deposit
+            </span>
+          </div>
+
+          <p className="text-xs text-white/55 leading-relaxed">
+            Enable the <strong className="text-white/75">ERC-4337 gasless burn</strong> toggle on the bridge by
+            pre-funding your <strong className="text-white/75">SimpleAccount</strong> with USDC.
+            Pimlico sponsors the approve + deposit transaction — you only need USDC in your smart account wallet,
+            no ETH required.
+          </p>
+
+          <div className="rounded-xl bg-white/5 border border-white/8 px-4 py-3 space-y-2 text-xs">
+            <div className="text-white/40 uppercase tracking-wider text-[10px] font-semibold">Setup flow</div>
+            <div className="grid sm:grid-cols-3 gap-2 text-white/55">
+              {[
+                { n: "1", label: "Connect wallet", desc: "Your SimpleAccount address is derived deterministically from your MetaMask EOA." },
+                { n: "2", label: "Fund smart account", desc: "Send USDC to your SimpleAccount address from any source (wallet, faucet, etc)." },
+                { n: "3", label: "Sponsored deposit", desc: "Click Deposit below — Pimlico pays the gas, USDC moves from smart account → Paymaster." },
+              ].map((s) => (
+                <div key={s.n} className="flex gap-2 items-start">
+                  <div className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold flex items-center justify-center shrink-0">
+                    {s.n}
+                  </div>
+                  <div>
+                    <div className="font-semibold text-white/80 mb-0.5">{s.label}</div>
+                    <div>{s.desc}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {!walletAddress ? (
+            <div className="rounded-xl bg-white/5 border border-white/8 px-4 py-4 text-center text-sm text-white/40">
+              Connect your wallet to see smart account addresses and deposit.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {smartAccLoading && (
+                <div className="text-xs text-white/40 flex items-center gap-2">
+                  <RefreshCw className="w-3 h-3 animate-spin" /> Loading smart account addresses…
+                </div>
+              )}
+              {chains.filter((c) => isAASupported(c.id)).map((chain) => {
+                const saAddr = smartAccounts[chain.id];
+                const step   = gaslessDepositStep[chain.id] ?? "";
+                const msg    = gaslessDepositMsg[chain.id] ?? "";
+                const txHash = gaslessDepositTx[chain.id] ?? "";
+                const busy   = step === "depositing";
+                const done   = step === "done";
+                const error  = step === "error";
+                return (
+                  <div key={chain.id} className="rounded-xl bg-white/5 border border-white/8 p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-[11px] font-bold text-white/70">
+                        {chain.name.charAt(0)}
+                      </div>
+                      <div className="font-semibold text-sm text-white/85">{chain.name}</div>
+                    </div>
+
+                    {saAddr ? (
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-white/40 uppercase tracking-wider font-semibold">Your SimpleAccount address</div>
+                        <div className="font-mono text-[11px] text-emerald-300/80 break-all bg-emerald-950/30 px-3 py-2 rounded-lg border border-emerald-500/20">
+                          {saAddr}
+                        </div>
+                        <div className="text-[10px] text-white/35">Send USDC here before depositing to Paymaster.</div>
+                      </div>
+                    ) : !smartAccLoading ? (
+                      <div className="text-xs text-white/35 italic">Could not derive smart account address — make sure your wallet is connected.</div>
+                    ) : null}
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min="0"
+                        step="1"
+                        placeholder="USDC amount"
+                        value={gaslessDepositAmount[chain.id] ?? ""}
+                        onChange={(e) => setGaslessDepositAmount((s) => ({ ...s, [chain.id]: e.target.value }))}
+                        disabled={busy}
+                        className="flex-1 bg-white/5 border border-white/12 rounded-xl px-3 py-2 text-sm text-white placeholder-white/30 focus:outline-none focus:border-emerald-500/50 disabled:opacity-50"
+                      />
+                      <button
+                        onClick={() => void handleGaslessDeposit(chain)}
+                        disabled={busy || !saAddr}
+                        className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white font-semibold rounded-xl px-4 py-2 text-sm transition-colors whitespace-nowrap"
+                      >
+                        {busy ? (
+                          <span className="flex items-center gap-1.5"><RefreshCw className="w-3.5 h-3.5 animate-spin" /> Depositing…</span>
+                        ) : "Deposit (Sponsored)"}
+                      </button>
+                    </div>
+
+                    {msg && !done && (
+                      <div className={cn(
+                        "text-xs px-3 py-2 rounded-lg flex items-start gap-2",
+                        error ? "bg-red-950/40 border border-red-500/20 text-red-300" : "bg-white/5 border border-white/8 text-white/55"
+                      )}>
+                        {error ? <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> : <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />}
+                        {msg}
+                      </div>
+                    )}
+
+                    {done && (
+                      <div className="text-xs bg-emerald-950/40 border border-emerald-500/20 text-emerald-300 px-3 py-2 rounded-lg flex items-center gap-2">
+                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                        Deposit complete!
+                        {txHash && chain.explorerUrl && (
+                          <a href={`${chain.explorerUrl}/tx/${txHash}`} target="_blank" rel="noopener noreferrer"
+                            className="ml-auto flex items-center gap-1 text-emerald-400 hover:text-emerald-300 transition-colors">
+                            View tx <ExternalLink className="w-3 h-3" />
+                          </a>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Stats */}

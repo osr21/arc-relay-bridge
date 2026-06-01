@@ -16,6 +16,8 @@ import {
 } from "@/lib/bridge";
 import { calculateFee, formatUsdc, FEE_BPS, isFeeActive } from "@/lib/config";
 import { BridgeSession, saveSession, loadSession, clearSession } from "@/lib/session";
+import { isAASupported } from "@/lib/aa";
+import { executeBridgeGasless } from "@/lib/gaslessBridge";
 import { WalletButton } from "@/components/WalletButton";
 import { ChainSelector } from "@/components/ChainSelector";
 import { StepProgress } from "@/components/StepProgress";
@@ -35,6 +37,7 @@ export default function BridgePage() {
   const [recipient, setRecipient] = useState("");
   const [useCustomRecipient, setUseCustomRecipient] = useState(false);
   const [useGasRelay, setUseGasRelay] = useState(false);
+  const [useGasless, setUseGasless]   = useState(false);
 
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletChainId, setWalletChainId] = useState<number | null>(null);
@@ -126,6 +129,11 @@ export default function BridgePage() {
     };
   }, []);
 
+  // Disable gasless mode automatically when switching to a chain that doesn't support AA
+  useEffect(() => {
+    if (!isAASupported(fromChain.id)) setUseGasless(false);
+  }, [fromChain.id]);
+
   function swapChains() {
     setFromChain(toChain);
     setToChain(fromChain);
@@ -169,35 +177,41 @@ export default function BridgePage() {
     lastFeeTxRef.current   = undefined;
     setBridgeStatus({ step: "approving", message: "Starting bridge..." });
 
+    const trackStatus = (status: BridgeStatus) => {
+      setBridgeStatus(status);
+      if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
+      if (status.feeTxHash)  lastFeeTxRef.current   = status.feeTxHash;
+      if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
+      if (
+        status.step === "approving"  ||
+        status.step === "collecting" ||
+        status.step === "burning"    ||
+        status.step === "attesting"  ||
+        status.step === "minting"
+      ) {
+        currentStepRef.current = status.step;
+      }
+      if (status.step === "attesting" && status.burnTxHash) {
+        saveSession({
+          burnTxHash:   status.burnTxHash,
+          feeTxHash:    status.feeTxHash,
+          messageBytes: status.messageBytes,
+          fromChainId:  fromChain.id,
+          toChainId:    toChain.id,
+          amount,
+          recipient:    effectiveRecipient,
+          savedAt:      Date.now(),
+        });
+      }
+    };
+
     try {
-      await executeBridge(fromChain, toChain, amount, effectiveRecipient, (status) => {
-        setBridgeStatus(status);
-        if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
-        if (status.feeTxHash)  lastFeeTxRef.current   = status.feeTxHash;
-        if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
-        if (
-          status.step === "approving"  ||
-          status.step === "collecting" ||
-          status.step === "burning"    ||
-          status.step === "attesting"  ||
-          status.step === "minting"
-        ) {
-          currentStepRef.current = status.step;
-        }
-        // Save session once burn is confirmed so user can resume after a refresh
-        if (status.step === "attesting" && status.burnTxHash) {
-          saveSession({
-            burnTxHash:  status.burnTxHash,
-            feeTxHash:   status.feeTxHash,
-            messageBytes: status.messageBytes,
-            fromChainId: fromChain.id,
-            toChainId:   toChain.id,
-            amount,
-            recipient:   effectiveRecipient,
-            savedAt:     Date.now(),
-          });
-        }
-      }, { useGasRelay: useGasRelay && !!toChain.gasRelayerAddress });
+      if (useGasless && isAASupported(fromChain.id)) {
+        await executeBridgeGasless(fromChain, toChain, amount, effectiveRecipient, trackStatus);
+      } else {
+        await executeBridge(fromChain, toChain, amount, effectiveRecipient, trackStatus,
+          { useGasRelay: useGasRelay && !!toChain.gasRelayerAddress });
+      }
       clearSession();
       await refreshBalances();
     } catch (err: unknown) {
@@ -589,6 +603,62 @@ export default function BridgePage() {
                       useGasRelay && "translate-x-4"
                     )} />
                   </button>
+                </div>
+              )}
+
+              {/* ── ERC-4337 Gasless Bridge toggle ── */}
+              {isAASupported(fromChain.id) && (
+                <div className={cn(
+                  "flex items-center justify-between px-4 py-3 rounded-xl border transition-all",
+                  useGasless
+                    ? "bg-violet-950/30 border-violet-500/40"
+                    : "bg-slate-800/30 border-slate-700/40"
+                )}>
+                  <div className="flex items-start gap-2">
+                    <Zap className={cn("w-3.5 h-3.5 mt-0.5 flex-shrink-0", useGasless ? "text-violet-400" : "text-violet-400/60")} />
+                    <div>
+                      <p className="text-xs text-slate-300 font-medium">
+                        ERC-4337 gasless burn
+                        <span className="ml-1.5 inline-flex items-center text-[9px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 px-1.5 py-0.5 rounded-full">
+                          BETA
+                        </span>
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        No ETH needed on source — gas paid in USDC via Paymaster
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setUseGasless(!useGasless)}
+                    disabled={isProcessing}
+                    className={cn(
+                      "relative w-9 h-5 rounded-full transition-colors duration-200 flex-shrink-0",
+                      useGasless ? "bg-violet-500" : "bg-slate-700",
+                      isProcessing && "opacity-50 cursor-not-allowed"
+                    )}
+                    aria-checked={useGasless}
+                    role="switch"
+                    aria-label="Enable ERC-4337 gasless bridging"
+                  >
+                    <span className={cn(
+                      "absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200",
+                      useGasless && "translate-x-4"
+                    )} />
+                  </button>
+                </div>
+              )}
+
+              {/* ── Gasless mode info banner ── */}
+              {useGasless && isAASupported(fromChain.id) && (
+                <div className="flex items-start gap-2 px-4 py-3 bg-violet-950/20 border border-violet-500/20 rounded-xl">
+                  <Info className="w-3.5 h-3.5 text-violet-400 mt-0.5 flex-shrink-0" />
+                  <p className="text-[11px] text-violet-300/80 leading-relaxed">
+                    Your <span className="font-semibold text-violet-300">smart account</span> pays gas via its USDC balance in the Paymaster.
+                    Deposit USDC to the Paymaster first on the{" "}
+                    <a href="/paymaster" className="underline underline-offset-2 hover:text-violet-200 transition-colors">
+                      Paymaster page
+                    </a>. The mint on the destination chain still uses a regular wallet tx.
+                  </p>
                 </div>
               )}
 

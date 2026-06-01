@@ -77,11 +77,22 @@ const oracleLimiter = rateLimit({
   message: { error: "Too many oracle requests." },
 });
 
+// Bundler proxy: each active bridge sends ~5 UserOp-related calls.
+// 300/min per IP supports a few concurrent bridges comfortably.
+const bundlerLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many bundler requests — please wait a moment." },
+});
+
 app.use("/api/attest",       attestLimiter);
 app.use("/api/relay",        relayLimiter);
 app.use("/api/chains",       chainsLimiter);
 app.use("/api/paymaster",    paymasterLimiter);
 app.use("/api/oracle",       oracleLimiter);
+app.use("/api/bundler",      bundlerLimiter);
 app.use("/api", router);
 
 export default app;
