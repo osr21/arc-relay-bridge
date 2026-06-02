@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ArrowDownUp, Info, RefreshCw, ExternalLink, Zap, RotateCcw } from "lucide-react";
+import { ArrowDownUp, Info, RefreshCw, ExternalLink, Zap, RotateCcw, Clock, ChevronDown, ChevronUp } from "lucide-react";
 import { CHAINS, ChainConfig, getChainById } from "@/lib/chains";
 import {
   BridgeStatus,
@@ -16,6 +16,7 @@ import {
 } from "@/lib/bridge";
 import { calculateFee, formatUsdc, FEE_BPS, isFeeActive } from "@/lib/config";
 import { BridgeSession, saveSession, loadSession, clearSession } from "@/lib/session";
+import { BridgeHistoryEntry, saveBridgeHistory, loadBridgeHistory } from "@/lib/history";
 import { isAASupported } from "@/lib/aa";
 import { executeBridgeGasless } from "@/lib/gaslessBridge";
 import { WalletButton } from "@/components/WalletButton";
@@ -52,10 +53,15 @@ export default function BridgePage() {
   });
   const [resumeSession, setResumeSession] = useState<BridgeSession | null>(null);
 
-  const currentStepRef  = useRef<ActiveStep | null>(null);
-  const lastBurnTxRef   = useRef<string | undefined>(undefined);
-  const lastFeeTxRef    = useRef<string | undefined>(undefined);
-  const lastMintTxRef   = useRef<string | undefined>(undefined);
+  const currentStepRef     = useRef<ActiveStep | null>(null);
+  const lastBurnTxRef      = useRef<string | undefined>(undefined);
+  const lastFeeTxRef       = useRef<string | undefined>(undefined);
+  const lastMintTxRef      = useRef<string | undefined>(undefined);
+  const attestingStartRef  = useRef<number | null>(null);
+
+  const [attestElapsed, setAttestElapsed] = useState(0);
+  const [history, setHistory]             = useState<BridgeHistoryEntry[]>(() => loadBridgeHistory());
+  const [showHistory, setShowHistory]     = useState(false);
 
   function handleWalletConnect(addr: string, chainId: number) {
     setWalletAddress(addr);
@@ -133,6 +139,20 @@ export default function BridgePage() {
   useEffect(() => {
     if (!isAASupported(fromChain.id)) setUseGasless(false);
   }, [fromChain.id]);
+
+  // Attestation elapsed timer — counts up every second while waiting for Circle Iris
+  useEffect(() => {
+    if (bridgeStatus.step === "attesting") {
+      if (!attestingStartRef.current) attestingStartRef.current = Date.now();
+      const id = setInterval(() => {
+        setAttestElapsed(Math.floor((Date.now() - (attestingStartRef.current ?? Date.now())) / 1000));
+      }, 1000);
+      return () => clearInterval(id);
+    }
+    attestingStartRef.current = null;
+    setAttestElapsed(0);
+    return undefined;
+  }, [bridgeStatus.step]);
 
   function swapChains() {
     setFromChain(toChain);
@@ -213,6 +233,17 @@ export default function BridgePage() {
           { useGasRelay: useGasRelay && !!toChain.gasRelayerAddress });
       }
       clearSession();
+      if (lastBurnTxRef.current) {
+        saveBridgeHistory({
+          fromChainId: fromChain.id,
+          toChainId:   toChain.id,
+          amount,
+          burnTxHash:  lastBurnTxRef.current,
+          mintTxHash:  lastMintTxRef.current,
+          completedAt: Date.now(),
+        });
+        setHistory(loadBridgeHistory());
+      }
       await refreshBalances();
     } catch (err: unknown) {
       console.error("[bridge error]", err);
@@ -258,6 +289,17 @@ export default function BridgePage() {
         }
       );
       clearSession();
+      if (lastBurnTxRef.current) {
+        saveBridgeHistory({
+          fromChainId: from.id,
+          toChainId:   to.id,
+          amount:      resumeSession?.amount ?? "",
+          burnTxHash:  lastBurnTxRef.current,
+          mintTxHash:  lastMintTxRef.current,
+          completedAt: Date.now(),
+        });
+        setHistory(loadBridgeHistory());
+      }
       await refreshBalances();
     } catch (err: unknown) {
       setBridgeStatus({
@@ -312,6 +354,14 @@ export default function BridgePage() {
     amountIsValid &&
     parsedAmount > fromBalanceNum;
 
+  // Relay-fee minimum guard — net received must be > 0 after all fees deducted
+  const relayFeeUnits = useGasRelay && toChain.gasRelayerAddress ? GAS_RELAY_FEE_UNITS : 0n;
+  const netReceived   = feeBreakdown ? feeBreakdown.bridgeAmount - relayFeeUnits : null;
+  const belowRelayMin = netReceived !== null && netReceived <= 0n && relayFeeUnits > 0n;
+
+  // Estimated bridge time — Arc source needs finalized attestation (~3–5 min), others ~1–3 min
+  const estimatedTime = fromChain.isArc ? "~3–5 min" : "~1–3 min";
+
   // Custom recipient validity — only flagged when the custom address field is active and non-empty
   const customRecipientInvalid =
     useCustomRecipient && recipient.trim() !== "" && !ethers.isAddress(recipient.trim());
@@ -325,6 +375,7 @@ export default function BridgePage() {
     !wrongNetwork &&
     !sameChain &&
     !insufficientBalance &&
+    !belowRelayMin &&
     !customRecipientInvalid &&
     !customRecipientMissing;
 
@@ -519,6 +570,13 @@ export default function BridgePage() {
                 </p>
               )}
 
+              {/* Relay fee minimum warning */}
+              {belowRelayMin && !insufficientBalance && (
+                <p className="text-xs text-amber-400 px-1">
+                  Amount too low — the 1 USDC relay fee would consume the entire transfer.
+                </p>
+              )}
+
               {/* Swap chains */}
               <div className="flex justify-center -my-1">
                 <button onClick={swapChains} disabled={isProcessing}
@@ -709,6 +767,14 @@ export default function BridgePage() {
                     <span className="text-slate-500">Protocol</span>
                     <span className="text-slate-300">Circle CCTP V2</span>
                   </div>
+
+                  <div className="flex justify-between text-xs">
+                    <span className="flex items-center gap-1 text-slate-500">
+                      <Clock className="w-3 h-3" />
+                      Est. time
+                    </span>
+                    <span className="text-slate-400">{estimatedTime}</span>
+                  </div>
                 </div>
               )}
 
@@ -721,6 +787,19 @@ export default function BridgePage() {
                     hasFee={feeEnabled}
                     stepLabels={useGasRelay && toChain.gasRelayerAddress ? { minting: "Relay" } : undefined}
                   />
+
+                  {/* Attestation elapsed timer */}
+                  {bridgeStatus.step === "attesting" && attestElapsed > 0 && (
+                    <div className="flex items-center justify-center gap-1.5 text-xs text-slate-500">
+                      <Clock className="w-3 h-3 animate-pulse" />
+                      <span>
+                        Waiting for attestation —{" "}
+                        {attestElapsed >= 60
+                          ? `${Math.floor(attestElapsed / 60)}m ${attestElapsed % 60}s`
+                          : `${attestElapsed}s`}
+                      </span>
+                    </div>
+                  )}
 
                   {/* Status message — special layout for attestation timeout */}
                   {bridgeStatus.step === "error" && bridgeStatus.error?.startsWith("Attestation timed out") ? (
@@ -863,13 +942,13 @@ export default function BridgePage() {
 
           {/* ── Chain pills ── */}
           <div className="grid grid-cols-2 gap-2">
-            <a href="https://docs.arc.network" target="_blank" rel="noopener noreferrer"
+            <a href="https://docs.arc.io" target="_blank" rel="noopener noreferrer"
               className="flex items-center gap-2 px-3 py-2 bg-[#111827]/60 border border-white/[0.05] rounded-xl hover:border-[#4F9CF9]/30 transition-all group">
               <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
                 style={{ background: CHAINS.ARC_TESTNET.logoColor }}>⬡</span>
               <div className="min-w-0">
                 <div className="text-xs text-white font-medium truncate">Arc Docs</div>
-                <div className="text-[10px] text-slate-500">docs.arc.network</div>
+                <div className="text-[10px] text-slate-500">docs.arc.io</div>
               </div>
               <ExternalLink className="w-3 h-3 text-slate-600 group-hover:text-[#4F9CF9] ml-auto transition-colors" />
             </a>
@@ -894,6 +973,76 @@ export default function BridgePage() {
               <ExternalLink className="w-3 h-3 text-slate-600 group-hover:text-[#4F9CF9] ml-auto transition-colors" />
             </a>
           </div>
+          {/* ── Bridge History ── */}
+          {history.length > 0 && (
+            <div className="bg-[#111827]/80 border border-white/[0.06] rounded-2xl overflow-hidden">
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-white/[0.02] transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <Clock className="w-3.5 h-3.5 text-slate-500" />
+                  <span className="text-xs font-medium text-slate-400">
+                    Recent bridges ({history.length})
+                  </span>
+                </div>
+                {showHistory
+                  ? <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
+                  : <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                }
+              </button>
+
+              {showHistory && (
+                <div className="border-t border-white/[0.05] divide-y divide-white/[0.04]">
+                  {history.map((entry) => {
+                    const from = getChainById(entry.fromChainId);
+                    const to   = getChainById(entry.toChainId);
+                    const minsAgo = Math.round((Date.now() - entry.completedAt) / 60000);
+                    const timeLabel =
+                      minsAgo < 1   ? "just now" :
+                      minsAgo < 60  ? `${minsAgo}m ago` :
+                      minsAgo < 1440 ? `${Math.floor(minsAgo / 60)}h ago` :
+                      `${Math.floor(minsAgo / 1440)}d ago`;
+                    return (
+                      <div key={entry.id} className="px-5 py-3 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 text-xs text-white">
+                            <span className="font-mono font-semibold">{entry.amount} USDC</span>
+                            <span className="text-slate-600">·</span>
+                            <span className="text-slate-400">
+                              {from?.shortName ?? entry.fromChainId} → {to?.shortName ?? entry.toChainId}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-600 mt-0.5">{timeLabel}</p>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {entry.mintTxHash && to && (
+                            <a
+                              href={`${to.explorerUrl}/tx/${entry.mintTxHash}`}
+                              target="_blank" rel="noopener noreferrer"
+                              className="text-[10px] text-emerald-500 hover:text-emerald-400 flex items-center gap-1 transition-colors"
+                            >
+                              Mint <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          )}
+                          {from && (
+                            <a
+                              href={`${from.explorerUrl}/tx/${entry.burnTxHash}`}
+                              target="_blank" rel="noopener noreferrer"
+                              className="text-[10px] text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors"
+                            >
+                              Burn <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
         </div>
       </main>
     </div>
