@@ -626,10 +626,9 @@ export default function PaymasterPage() {
           </div>
 
           <p className="text-xs text-white/55 leading-relaxed">
-            Enable the <strong className="text-white/75">ERC-4337 gasless burn</strong> toggle on the bridge by
-            pre-funding your <strong className="text-white/75">SimpleAccount</strong> with USDC.
-            Pimlico sponsors the approve + deposit transaction — you only need USDC in your smart account wallet,
-            no ETH required.
+            Enable the <strong className="text-white/75">ERC-4337 gasless burn</strong> toggle on the bridge.
+            Bridge USDC comes from your <strong className="text-white/75">MetaMask wallet</strong> — no need to pre-fund the smart account.
+            The Paymaster balance below covers <em>gas only</em>; Pimlico sponsors this deposit transaction so no ETH is required.
           </p>
 
           <div className="rounded-xl bg-white/5 border border-white/8 px-4 py-3 space-y-2 text-xs">
@@ -637,8 +636,8 @@ export default function PaymasterPage() {
             <div className="grid sm:grid-cols-3 gap-2 text-white/55">
               {[
                 { n: "1", label: "Connect wallet", desc: "Your SimpleAccount address is derived deterministically from your MetaMask EOA." },
-                { n: "2", label: "Fund smart account", desc: "Send USDC to your SimpleAccount address from any source (wallet, faucet, etc)." },
-                { n: "3", label: "Sponsored deposit", desc: "Click Deposit below — Pimlico pays the gas, USDC moves from smart account → Paymaster." },
+                { n: "2", label: "Fund smart account for gas", desc: "Send a small amount of USDC to your SimpleAccount — this covers gas costs only (≈1.8 USDC per bridge)." },
+                { n: "3", label: "Sponsored deposit", desc: "Click Deposit below — Pimlico pays the gas, USDC moves from smart account → Paymaster gas vault." },
               ].map((s) => (
                 <div key={s.n} className="flex gap-2 items-start">
                   <div className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-bold flex items-center justify-center shrink-0">
