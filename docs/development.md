@@ -1,110 +1,127 @@
 # Development Guide
 
-## Project structure
+  ## Prerequisites
 
-```
-artifacts/
-  arc-bridge/          # Bridge frontend (React + Vite)
-    src/
-      components/      # UI components
-        ChainSelector.tsx   # Chain dropdown with logo + domain
-        StepProgress.tsx    # 5-step visual progress bar
-        TxLink.tsx          # Explorer link or copy-to-clipboard for tx hashes
-        WalletButton.tsx    # Connect/disconnect wallet display
-      contracts/
-        FeeRouterABI.ts     # ABI for optional on-chain FeeRouter (not deployed)
-      lib/
-        bridge.ts       # All bridge logic — approve, burn, attest, mint
-        chains.ts       # Chain configs, contract addresses, ABIs
-        config.ts       # Fee configuration (FEE_BPS, calculateFee)
-      pages/
-        BridgePage.tsx  # Main bridge UI
-  api-server/          # Express API server — attestation proxy
-    src/
-      routes/
-        attest.ts       # GET /api/attest and /api/attest/hash/:messageHash
-```
+  - Node.js 24+, pnpm 9+, MetaMask
+  - Secrets: `PIMLICO_API_KEY`, `DEPLOYER_PRIVATE_KEY`, `FEE_RECIPIENT`, `SESSION_SECRET`
 
-## Running locally
+  ## Project structure
 
-```bash
-# Install dependencies
-pnpm install
+  ```
+  artifacts/arc-bridge/src/
+    lib/
+      chains.ts           Chain configs, CCTP domains, contract addresses, ABIs
+      bridge.ts           Standard CCTP flow (approve → burn → attest → mint)
+      gaslessBridge.ts    ERC-4337 gasless flow + Paymaster deposit
+      aa.ts               permissionless SimpleAccount + bundler clients
+      paymaster.ts        Paymaster v5 addresses ← update after redeploy
+      config.ts           FeeRouter config
+      session.ts          Bridge session persistence (localStorage)
+    pages/
+      BridgePage.tsx      Main bridge UI (standard + gasless)
+      PaymasterPage.tsx   Gasless setup UI
 
-# Start the bridge frontend
-pnpm --filter @workspace/arc-bridge run dev
+  artifacts/api-server/src/routes/
+    paymaster.ts          Paymaster address registry ← also update after redeploy
+    gasRelay.ts           Gasless mint relay
+    oracle.ts             USDC price feed
 
-# Start the API server (attestation proxy)
-pnpm --filter @workspace/api-server run dev
+  contracts/
+    Paymaster.sol         ERC-4337 v0.7 USDC gas vault
+    FeeRouter.sol         CCTP fee routing
 
-# Type-check everything
-pnpm run typecheck
-```
+  scripts/src/
+    deployPaymaster.ts    Deploy + auto-fund Paymaster (all chains)
+    fundPaymaster.ts      Top up EntryPoint ETH deposits
+    compilePaymaster.ts   Compile Paymaster.sol → ABI + bytecode
+    deployFeeRouter.ts    Deploy FeeRouter
+  ```
 
-## Environment variables
+  ## Running locally
 
-| Variable | Required | Description |
-|---|---|---|
-| `VITE_FEE_RECIPIENT` | Optional | Wallet address to receive protocol fees. Leave empty to disable fee collection. |
-| `SESSION_SECRET` | Optional | Used by the API server for session management. |
-| `PORT` | Auto-set | Port for each service (injected by Replit workflows). |
+  ```bash
+  pnpm install
+  pnpm --filter @workspace/arc-bridge run dev     # bridge frontend
+  pnpm --filter @workspace/api-server run dev     # API server (gasless relay + oracle)
+  pnpm run typecheck                              # full typecheck across all packages
+  ```
 
-Set secrets via Replit's Secrets panel — never commit them to the repo.
+  ## Deploying contracts
 
-## Adding a new chain
+  ### Paymaster
 
-1. Open `artifacts/arc-bridge/src/lib/chains.ts`
-2. Add a new entry to the `CHAINS` object:
+  ```bash
+  # Compile
+  pnpm --filter @workspace/scripts run compile-paymaster
 
-```typescript
-NEW_CHAIN: {
-  id: 12345,
-  hexId: "0x3039",
-  name: "My Chain Testnet",
-  shortName: "MyChain",
-  rpcUrl: "https://rpc.mychain.example",
-  explorerUrl: "https://explorer.mychain.example",
-  cctpDomain: 99,           // From Circle's CCTP domain registry
-  usdcAddress: "0x...",     // USDC contract on this chain
-  tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
-  messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
-  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-  cctpVersion: 2,
-  minFinalityThreshold: 1000,
-  logoColor: "#AABBCC",
-},
-```
+  # Deploy + auto-fund EntryPoint (0.05 ETH per chain)
+  pnpm --filter @workspace/scripts run deploy-paymaster
 
-3. Run `pnpm run typecheck` to verify there are no errors.
+  # Top up existing EntryPoint deposits
+  pnpm --filter @workspace/scripts run fund-paymaster
+  pnpm --filter @workspace/scripts run fund-paymaster -- --only sepolia --amount 0.05
+  pnpm --filter @workspace/scripts run fund-paymaster -- --only base   --amount 0.02
+  pnpm --filter @workspace/scripts run fund-paymaster -- --only fuji   --amount 0.05
+  ```
 
-> **Important:** Verify that the TokenMessenger and MessageTransmitter addresses are correct for the new chain. On-chain probe `localDomain()` (selector `0x8d3638f4`) to confirm the MessageTransmitter is a live CCTP contract.
+  **After every deploy, update BOTH address files:**
 
-## Key design decisions
+  ```typescript
+  // artifacts/arc-bridge/src/lib/paymaster.ts
+  export const PAYMASTER_ADDRESSES: Record<number, string> = {
+    5042002:  "0x...", // Arc Testnet
+    11155111: "0x...", // Ethereum Sepolia
+    84532:    "0x...", // Base Sepolia
+    43113:    "0x...", // Avalanche Fuji
+  };
 
-### Why frontend-only?
+  // artifacts/api-server/src/routes/paymaster.ts — same values
+  ```
 
-The bridge logic runs entirely in the browser via ethers.js + MetaMask. No backend is needed for the actual bridging — only the attestation proxy server exists to avoid CORS restrictions when calling Circle's Iris API.
+  Forgetting the API server file causes silent UserOp rejections (relay validates against old address).
 
-### Why CCTP V2 on all chains?
+  ### FeeRouter
 
-All supported chains (Arc, Sepolia, Base Sepolia, Fuji) use the same CCTP V2 TokenMessenger contract at address `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA`. The older V1 4-parameter `depositForBurn` selector (`0x6fd3504e`) is not supported by these contracts — always use the 7-parameter V2 version (selector `0x8e0250ee`).
+  ```bash
+  pnpm --filter @workspace/scripts run deploy
+  ```
 
-### Why manual fee collection?
+  ## Compilation constraints
 
-A FeeRouter smart contract ABI exists in the codebase but no FeeRouter is deployed. Instead, fees are collected via a plain ERC-20 `transfer()` on the source chain before the burn. This requires no contract deployment and works on any EVM chain.
+  ```js
+  // scripts/src/compilePaymaster.ts
+  settings: {
+    optimizer: { enabled: true, runs: 200 },
+    evmVersion: "paris",  // Arc Testnet + Fuji reject PUSH0 (Shanghai opcode)
+  }
+  ```
 
-### Why dual attestation polling?
+  In `contracts/Paymaster.sol`:
+  - `entryPoint` must be `constant` (not `immutable`) — 2-immutable 0x60c0 init silently reverts on Arc/Base/Fuji
+  - No `nonReentrant` on `validatePaymasterUserOp` — ERC-7562 forbids global storage writes for unstaked paymasters
 
-The bridge tries two Circle Iris API paths every polling round:
+  ## ERC-4337 client (permissionless v0.3.6 + viem v2.51.3)
 
-1. `/v1/attestations/{messageHash}` — content-addressed, works as soon as the attestation is signed
-2. `/v2/messages/{domain}?transactionHash={hash}` — returns `pending_confirmations` status which is useful for showing progress
+  ```typescript
+  // artifacts/arc-bridge/src/lib/aa.ts
+  const account = await toSimpleSmartAccount({
+    client: publicClient,
+    owner: walletClient,
+    entryPoint: { address: ENTRY_POINT, version: "0.7" },
+  });
+  // Smart account address is deterministic — same EOA → same address on every chain
+  ```
 
-This maximises reliability: if one endpoint is slow, the other may respond first.
+  ## Known gotchas
 
-## Common pitfalls
-
-- **Calling V1 ABI on V2 contracts** — always check `cctpVersion` in the chain config before choosing which ABI to use.
-- **Wrong selector for USDC decimals** — Arc's USDC is at a system address and uses 6 decimals via the ERC-20 interface even though the native gas token uses 18 decimals.
-- **RPC reliability** — public RPC endpoints go down. `rpc.sepolia.org` is known to be unreliable; use `ethereum-sepolia-rpc.publicnode.com` instead.
-- **Arc explorer** — `explorer.testnet.arc.network` is frequently unavailable. TxLink renders a copy-to-clipboard button for Arc transactions instead of a dead link.
+  | Gotcha | Detail |
+  |---|---|
+  | PUSH0 on Arc/Fuji | Always compile with `evmVersion: "paris"` |
+  | 2-immutable init revert | Keep `entryPoint` as `constant` in Paymaster.sol |
+  | ERC-7562 validation | No global storage writes in `validatePaymasterUserOp` |
+  | EntryPoint needs ETH | Run `fund-paymaster` after every deploy |
+  | Two address files | Update both `lib/paymaster.ts` AND `api-server/routes/paymaster.ts` |
+  | Arc USDC decimals | ERC-20 interface = 6 dec; native gas token = 18 dec |
+  | Sepolia RPC | Use `publicnode.com` — `rpc.sepolia.org` is unreliable |
+  | Gas vault ≠ smart acct wallet | Gas vault covers bundler fees only, not the bridge amount |
+  

@@ -1,159 +1,92 @@
 # Paymaster
 
-The Paymaster contract enables gasless transactions on Arc Relay Bridge by letting users pay transaction fees in USDC instead of native gas tokens. It is compatible with [ERC-4337 v0.7](https://eips.ethereum.org/EIPS/eip-4337) and integrates with the canonical EntryPoint.
+  The Paymaster contract enables gasless bridging — users pay transaction fees in USDC instead of native tokens (ETH, AVAX).
 
-## Contract addresses (v3 — 2026-06-01)
+  ## Contract addresses (v5)
 
-| Chain | Address |
-|---|---|
-| Arc Testnet | [`0x3fAC0e0F8d8BfE9498d06332582C48Dc32698D65`](https://testnet.arcscan.app/address/0x3fAC0e0F8d8BfE9498d06332582C48Dc32698D65) |
-| Ethereum Sepolia | [`0xfF57188ea392bA5e91bdf675AAA55f2D8Ba9BdBe`](https://sepolia.etherscan.io/address/0xfF57188ea392bA5e91bdf675AAA55f2D8Ba9BdBe) |
-| Base Sepolia | [`0x3649C856025FDC0F92EDAc2B52DD53452248bA33`](https://sepolia.basescan.org/address/0x3649C856025FDC0F92EDAc2B52DD53452248bA33) |
-| Avalanche Fuji | [`0xd9E34Aca62a16a58a4e7144130Be94bD908D368c`](https://testnet.snowtrace.io/address/0xd9E34Aca62a16a58a4e7144130Be94bD908D368c) |
+  | Chain | Address |
+  |---|---|
+  | Arc Testnet | `0xfD06D288d481515a986DF28030AF013De290D76C` |
+  | Ethereum Sepolia | `0xC9E9ba0bfE58FA438B8B6f2182d3ADA3669F9Eb4` |
+  | Base Sepolia | `0xe355E9dCdEAB37eA8fd81b9457Ad2C56d3eE9055` |
+  | Avalanche Fuji | `0x7C75A75B59b63871e1Bb47fA63e541F0e5975f93` |
 
-**ERC-4337 v0.7 EntryPoint (all chains):** `0x0000000071727De22E5E9d8BAf0edAc6f37da032`
+  Re-deploy: `pnpm --filter @workspace/scripts run deploy-paymaster`
 
-## How it works
+  ## Two distinct USDC pools
 
-Users deposit USDC into the Paymaster in advance. When a sponsored transaction is executed:
+  | Pool | Purpose | Notes |
+  |---|---|---|
+  | **Smart account wallet** | USDC burned for the bridge | Whatever you want to bridge |
+  | **Paymaster gas vault** | Bundler gas fees per bridge | Keep ≥ 1.8 USDC |
 
-1. The ERC-4337 EntryPoint calls `validatePaymasterUserOp` — the Paymaster checks the user's available balance, reserves the worst-case gas cost in `locked`, and approves the UserOperation
-2. The EntryPoint executes the user's call
-3. The EntryPoint calls `postOp` — the Paymaster releases the reservation and charges the actual gas cost by deducting from `balances[user]`
+  The gas vault does **not** contribute to the bridge amount. A vault with 17 USDC does not let you bridge 17 USDC — the smart account wallet also needs USDC.
 
-For non-ERC-4337 flows (direct relayer), the trusted relayer calls `deductGas` after executing a transaction on the user's behalf.
+  ## ERC-4337 flow
 
-```
-User                 Paymaster           EntryPoint (ERC-4337 v0.7)
- │                       │                       │
- │  deposit(amount)      │                       │
- │──────────────────────►│                       │
- │                       │                       │
- │  (submit UserOp)      │  validatePaymasterUserOp
- │                       │◄──────────────────────│
- │                       │  lock worst-case cost  │
- │                       │──────────────────────►│
- │                       │                       │  execute user call
- │                       │   postOp(actualCost)  │
- │                       │◄──────────────────────│
- │                       │  unlock + deduct actual│
-```
+  ```
+  User signs UserOperation
+          │
+  EntryPoint v0.7 → validatePaymasterUserOp()
+      • Checks available = balances[user] - locked[user] ≥ maxUsdcCost
+      • Locks  locked[user] += maxUsdcCost
+      • Returns context = abi.encode(user, maxUsdcCost)
+          │
+  EntryPoint executes inner calls
+      • USDC.approve(tokenMessenger, burnAmount)
+      • TokenMessenger.depositForBurn(...)
+          │
+  EntryPoint → postOp()
+      • Unlocks locked[user] -= reserved
+      • Calculates actualUsdcCost = (actualGasCost / feePerGas) × gasRate
+      • Deducts  balances[user] -= actualUsdcCost
+      • Transfers actualUsdcCost → feeRecipient
+      • Emits GasSponsored(user, usdcDeducted, remainingBalance)
+  ```
 
-## Balances and reservations
+  ## One-time setup per chain
 
-| Mapping | Description |
-|---|---|
-| `balances[user]` | Total USDC deposited by the user (6-decimal units) |
-| `locked[user]` | USDC reserved for in-flight UserOperations |
+  1. **Fund the smart account wallet** — send USDC from MetaMask to the SimpleAccount address shown on the Paymaster page. Regular ERC-20 transfer, tiny native gas, done once.
+  2. **Deposit USDC to gas vault** — Paymaster page → enter amount → Deposit. Pimlico-sponsored UserOp; no native gas needed.
+  3. **Bridge** — enable ERC-4337 toggle and bridge normally.
 
-**Available balance** = `balances[user] - locked[user]`
+  ## EntryPoint deposit
 
-The Paymaster only sponsors a UserOperation if `available >= maxCost` where `maxCost = verificationGasLimit * gasRate`.
+  The Paymaster must have ETH at the EntryPoint. Run after any new deployment:
 
-## Gas rate
+  ```bash
+  pnpm --filter @workspace/scripts run fund-paymaster
+  pnpm --filter @workspace/scripts run fund-paymaster -- --only sepolia --amount 0.05
+  pnpm --filter @workspace/scripts run fund-paymaster -- --only base   --amount 0.02
+  pnpm --filter @workspace/scripts run fund-paymaster -- --only fuji   --amount 0.05
+  ```
 
-The relayer owner can set the rate at which gas is charged in USDC:
+  Funded 2026-06-03:
 
-```solidity
-function setGasRate(uint256 newRate) external onlyOwner
-```
+  | Chain | ETH at EntryPoint |
+  |---|---|
+  | Ethereum Sepolia | ~0.048 ETH |
+  | Base Sepolia | ~0.020 ETH |
+  | Avalanche Fuji | ~0.050 ETH |
 
-- Units: USDC 6-decimal units per gas unit
-- Current rate: **2** (0.000002 USDC per gas unit)
-- Maximum allowed rate: `MAX_GAS_RATE = 1_000_000` (1 USDC per gas unit)
+  ## Deployment constraints
 
-## User operations
+  | Constraint | Reason |
+  |---|---|
+  | `evmVersion: "paris"` | Arc Testnet + Fuji reject PUSH0 (Shanghai opcode) |
+  | `entryPoint` as `constant`, not `immutable` | 2-immutable 0x60c0 init silently reverts on Arc/Base/Fuji |
+  | No `nonReentrant` on `validatePaymasterUserOp` | ERC-7562 forbids global storage writes for unstaked paymasters — Pimlico rejects at simulation |
+  | Deposit ETH at EntryPoint before use | Bundler returns AA31 if deposit is 0 |
+  | Update both address files after redeploy | `lib/paymaster.ts` + `api-server/routes/paymaster.ts` |
 
-### Deposit
+  ## Security
 
-```solidity
-function deposit(uint256 amount) external
-```
-
-Transfers `amount` USDC from the caller into the Paymaster. The caller must first approve the Paymaster to spend their USDC.
-
-### Withdraw
-
-```solidity
-function withdraw(uint256 amount) external
-```
-
-Withdraws `amount` from the caller's balance. Only the unlocked portion (`balances - locked`) can be withdrawn.
-
-### Check balance
-
-```solidity
-function balances(address user) external view returns (uint256)
-function locked(address user) external view returns (uint256)
-```
-
-## Admin operations
-
-All admin functions are `onlyOwner` (or `onlyRelayer` for `deductGas`).
-
-| Function | Description |
-|---|---|
-| `setRelayer(address)` | Replace the trusted relayer |
-| `setFeeRecipient(address)` | Change where collected fees go |
-| `setGasRate(uint256)` | Adjust the USDC-per-gas rate (capped at `MAX_GAS_RATE`) |
-| `pause()` / `unpause()` | Freeze or resume user-facing operations |
-| `rescueTokens(token, to, amount)` | Recover accidentally sent tokens (USDC is blocked) |
-| `transferOwnership(address)` | Initiate ownership transfer |
-| `acceptOwnership()` | New owner must call to complete transfer |
-
-## Security properties
-
-| Property | Implementation |
-|---|---|
-| Reentrancy protection | `bool private _locked` mutex; `nonReentrant` modifier on all state-changing user functions |
-| No USDC rescue | `rescueTokens` explicitly reverts if `token == usdc` |
-| Gas rate cap | `setGasRate` reverts if `newRate > MAX_GAS_RATE` |
-| Locked funds protection | `withdraw` reverts if `amount > balances[user] - locked[user]` |
-| Two-step ownership | New owner must call `acceptOwnership()` to prevent accidental misdirection |
-| Emergency pause | `deposit`, `withdraw`, `validatePaymasterUserOp`, `postOp`, `deductGas` all check `whenNotPaused` |
-
-## Compilation requirements
-
-The Paymaster must be compiled with `evmVersion: "paris"`:
-
-- Arc Testnet and Avalanche Fuji reject the `PUSH0` opcode introduced in Shanghai/Cancun
-- Hardhat config: `settings: { evmVersion: "paris" }`
-
-**Critical:** Do not make `entryPoint` an `immutable` variable. Contracts with two or more `immutable` variables produce a `0x60c0` constructor prefix that silently reverts on Arc Testnet, Base Sepolia, and Avalanche Fuji. The `entryPoint` is hardcoded as a `constant` to keep the constructor at the safe single-immutable `0x60a0` pattern (only `usdc` is immutable).
-
-## Deployment
-
-Re-deploy to all chains:
-
-```bash
-pnpm --filter @workspace/scripts run deploy-paymaster
-```
-
-Deploy to specific chains only:
-
-```bash
-# Single chain
-pnpm --filter @workspace/scripts run deploy-paymaster -- --only arc
-pnpm --filter @workspace/scripts run deploy-paymaster -- --only sepolia
-
-# Multiple chains (comma-separated, substring matched)
-pnpm --filter @workspace/scripts run deploy-paymaster -- --only arc,fuji
-```
-
-Constructor parameters:
-
-```solidity
-constructor(
-    address usdc,          // USDC token address on this chain
-    address relayer,       // initial trusted relayer (deployer)
-    address feeRecipient,  // address that receives collected fees
-    uint256 gasRate        // initial USDC-per-gas rate (6-decimal units)
-)
-```
-
-`entryPoint` is hardcoded to `0x0000000071727De22E5E9d8BAf0edAc6f37da032` (ERC-4337 v0.7) and requires no constructor argument.
-
-Deployment output is written to `artifacts/arc-bridge/src/contracts/paymasterDeployments.json` and must be manually propagated to:
-
-- `artifacts/arc-bridge/src/lib/paymaster.ts` — `PAYMASTER_ADDRESSES` map
-- `artifacts/api-server/src/routes/paymaster.ts` — per-chain address in the `CHAINS` array
+  - `onlyEntryPoint` on `validatePaymasterUserOp` and `postOp`
+  - `onlyRelayer` on `deductGas`
+  - `MAX_DEDUCTION_PER_TX = 10 USDC` hard cap per call
+  - `locked[user]` prevents double-spending across concurrent UserOps
+  - `withdraw()` only releases unlocked funds
+  - Reentrancy guard on `deposit`, `withdraw`, `deductGas`, `postOp`
+  - Emergency pause + two-step ownership
+  - `rescueTokens` blocks USDC rescue
+  
