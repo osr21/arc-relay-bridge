@@ -57,6 +57,15 @@ const ABI = [
 // ERC-4337 v0.7 EntryPoint — deployed via CREATE2, same address on all EVM chains.
 const ENTRY_POINT_V07 = "0x0000000071727De22E5E9d8BAf0edAc6f37da032";
 
+const ENTRY_POINT_ABI = [
+  "function depositTo(address account) payable",
+  "function getDepositInfo(address account) view returns (uint256 deposit, bool staked, uint112 stake, uint32 unstakeDelaySec, uint48 withdrawTime)",
+];
+
+// ETH deposited to EntryPoint per Paymaster after each fresh deploy.
+// This reserve covers bundler gas costs for UserOps. Replenish with fund-paymaster.
+const INITIAL_EP_DEPOSIT = ethers.parseEther("0.05");
+
 // Compiled from contracts/Paymaster.sol (solc 0.8.20, optimizer 200 runs, evmVersion paris)
 // v5: deductGas now checks available (unlocked) balance, not total — prevents invariant violation
 //     when a UserOp reservation is pending concurrently.
@@ -163,6 +172,20 @@ async function deployToChain(
     : addr;
   console.log(`   ✅ Address  : ${addr}`);
   console.log(`   🔍 Explorer : ${explorerLink}`);
+
+  // Deposit ETH to EntryPoint so bundlers can use this Paymaster immediately.
+  // Without this deposit every UserOp simulation rejects the Paymaster.
+  const currentBalance = await provider.getBalance(wallet.address);
+  if (currentBalance >= INITIAL_EP_DEPOSIT) {
+    console.log(`   Depositing ${ethers.formatEther(INITIAL_EP_DEPOSIT)} ETH to EntryPoint for Paymaster…`);
+    const entryPoint = new ethers.Contract(ENTRY_POINT_V07, ENTRY_POINT_ABI, wallet);
+    const fundTx = await entryPoint.depositTo(addr, { value: INITIAL_EP_DEPOSIT });
+    await fundTx.wait();
+    console.log(`   ✅ EntryPoint deposit complete`);
+  } else {
+    console.log(`   ⚠️  Insufficient balance for EntryPoint deposit — run fund-paymaster later`);
+    console.log(`      (need ${ethers.formatEther(INITIAL_EP_DEPOSIT)} ETH, have ${ethers.formatEther(currentBalance)} ETH)`);
+  }
 
   return addr;
 }

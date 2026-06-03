@@ -12,6 +12,7 @@
     "deploy-relayer": "tsx ./src/deployGasRelayer.ts",
     "deploy-yield": "tsx ./src/deployYield.ts",
     "deploy-paymaster": "tsx ./src/deployPaymaster.ts",
+    "fund-paymaster": "tsx ./src/fundPaymaster.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
