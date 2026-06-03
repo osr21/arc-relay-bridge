@@ -1,21 +1,23 @@
 /**
  * Gasless bridge using ERC-4337 + our USDC Paymaster.
  *
- * USDC for the burn comes from the user's MetaMask EOA — the smart account
- * pulls it via transferFrom as the first call in the batched UserOperation.
- * A one-time EOA approve(smartAccount, MaxUint256) is required; after that
- * every bridge is fully gasless with no ETH and no pre-funded smart account.
+ * The smart account holds USDC in its own on-chain wallet and burns it directly
+ * via the CCTP TokenMessenger — no native tokens (ETH / AVAX) needed at any step.
  *
- * UserOp batch (4 calls):
- *   1. USDC.transferFrom(EOA, smartAccount, burnAmount)   — pull from wallet
- *   2. USDC.approve(tokenMessenger, burnAmount)           — allow burn
- *   3. TokenMessenger.depositForBurn(...)                 — burn → CCTP
+ * UserOp batch (2 calls):
+ *   1. USDC.approve(tokenMessenger, burnAmount)   — allow burn
+ *   2. TokenMessenger.depositForBurn(...)          — burn → CCTP
  *
- * Gas is paid from the smart account's USDC deposit in our Paymaster — no
- * native tokens ever needed.
+ * Gas is paid from the smart account's USDC deposit in our Paymaster.
  *
  * Supported source chains: Ethereum Sepolia, Base Sepolia, Avalanche Fuji.
  * Arc Testnet is not supported as a source chain (native USDC gas works there).
+ *
+ * Setup required (one-time per chain):
+ *   • Fund the smart account address with USDC for the bridge amount.
+ *   • Deposit a small amount of USDC into the Paymaster for gas (≈1.8 USDC / bridge).
+ *     The Paymaster page → Gasless Bridge Setup runs this deposit as a Pimlico-sponsored
+ *     UserOp so NO native tokens are needed for the deposit either.
  */
 
 import {
@@ -25,14 +27,12 @@ import {
   erc20Abi,
   parseAbi,
   parseUnits,
-  maxUint256,
   type Chain,
   type Hex,
   type Address,
   type PublicClient,
 } from "viem";
 import { sepolia, baseSepolia, avalancheFuji } from "viem/chains";
-import { ethers } from "ethers";
 import type { ChainConfig } from "./chains";
 import type { BridgeStatus } from "./bridge";
 import { resumeBridge } from "./bridge";
@@ -53,16 +53,15 @@ const PAYMASTER_BALANCES_ABI = parseAbi([
 
 const USDC_READ_ABI = parseAbi([
   "function balanceOf(address) view returns (uint256)",
-  "function allowance(address owner, address spender) view returns (uint256)",
 ]);
 
 /** Hard cap the Paymaster enforces per UserOp (6 dec USDC). */
 const PAYMASTER_MAX_DEDUCTION = 10_000_000n; // 10 USDC
 
 /**
- * Conservative total gas estimate for a 3-call batched UserOp:
- * transferFrom ~30k + approve ~50k + depositForBurn ~200k + overhead ~200k = ~480k,
- * +25% buffer = 600k.
+ * Conservative total gas estimate for a 2-call batched UserOp:
+ * approve ~50k + depositForBurn ~200k + overhead ~200k = ~450k,
+ * +33% buffer = 600k.
  */
 const ESTIMATED_USEROP_GAS = 600_000n;
 
@@ -117,69 +116,22 @@ function parseMessageSentFromLogs(
   return undefined;
 }
 
-/** Get the connected EOA address from MetaMask. */
-async function getEoaAddress(): Promise<Address> {
-  if (!window.ethereum) throw new Error("No wallet detected");
-  const accounts = await (window.ethereum as { request: (args: { method: string }) => Promise<string[]> })
-    .request({ method: "eth_accounts" });
-  if (!accounts[0]) throw new Error("No wallet connected");
-  return accounts[0] as Address;
-}
-
-/**
- * Ensure the EOA has approved the smart account to spend at least `amount` USDC.
- * If not, submits a regular MetaMask approve(smartAccount, MaxUint256) tx.
- * This is a one-time per-chain setup — subsequent bridges reuse the approval.
- */
-async function ensureEoaApproval(
-  chain: ChainConfig,
-  eoaAddress: Address,
-  smartAccountAddr: Address,
-  amount: bigint,
-  onStatus: (s: BridgeStatus) => void
-): Promise<void> {
-  const provider = new ethers.BrowserProvider(window.ethereum as ethers.Eip1193Provider);
-
-  const usdc = new ethers.Contract(
-    chain.usdcAddress,
-    [
-      "function allowance(address owner, address spender) view returns (uint256)",
-      "function approve(address spender, uint256 amount) returns (bool)",
-    ],
-    provider
-  );
-
-  const allowance = (await usdc.allowance(eoaAddress, smartAccountAddr)) as bigint;
-  if (allowance >= amount) return;
-
-  onStatus({
-    step: "approving",
-    message:
-      "One-time setup: approve your wallet to let the smart account pull USDC for the burn…",
-  });
-
-  const signer = await provider.getSigner();
-  const usdcSigner = usdc.connect(signer) as ethers.Contract;
-  // Approve unlimited so this never needs to be repeated.
-  const tx = await usdcSigner.approve(smartAccountAddr, ethers.MaxUint256);
-  await tx.wait();
-}
-
 // ── Main exports ───────────────────────────────────────────────────────────────
 
 /**
  * Execute the gasless bridge flow:
- *  0. (One-time) EOA approves smart account to spend USDC if not already done.
- *  1. Build a 3-call batched UserOp:
- *       transferFrom(EOA → smartAccount, burnAmount)
+ *  1. Pre-flight: verify smart account has enough USDC to burn AND enough
+ *     Paymaster balance to cover gas.
+ *  2. Build a 2-call batched UserOp:
  *       approve(tokenMessenger, burnAmount)
  *       depositForBurn(...)
- *  2. Pay gas via USDC Paymaster — no ETH needed.
- *  3. Wait for UserOp inclusion, parse messageBytes.
- *  4. Resume via resumeBridge (attestation + EOA mint on destination chain).
+ *  3. Pay gas via USDC Paymaster — no native tokens needed.
+ *  4. Wait for UserOp inclusion, parse messageBytes.
+ *  5. Resume via resumeBridge (attestation + EOA mint on destination chain).
  *
- * USDC comes from the user's MetaMask wallet. Gas comes from the smart account's
- * Paymaster deposit. After the one-time EOA approval, every bridge is fully gasless.
+ * USDC for the burn comes from the smart account's own on-chain balance.
+ * Gas comes from the smart account's USDC deposit in the Paymaster.
+ * No ETH / AVAX / native tokens required at any point.
  */
 export async function executeBridgeGasless(
   fromChain: ChainConfig,
@@ -212,33 +164,35 @@ export async function executeBridgeGasless(
 
   onStatus({
     step: "approving",
-    message: "Preparing smart account — checking Paymaster balance…",
+    message: "Preparing smart account — checking balances…",
   });
 
   const paymasterAddr = (PAYMASTER_ADDRESSES as Record<number, string | undefined>)[fromChain.id];
   if (!paymasterAddr) throw new Error(`No Paymaster deployed for ${fromChain.name}.`);
 
   const smartAccountAddr = await getSmartAccountAddress(fromChain.id);
-  const eoaAddress       = await getEoaAddress();
 
   const preflight: PublicClient = createPublicClient({
     chain: (CHAIN_VIEM_MAP as Record<number, Chain>)[fromChain.id],
     transport: http(CHAIN_RPC[fromChain.id]),
   });
 
-  // ── Check EOA USDC balance ────────────────────────────────────────────────
-  const eoaUsdcBalance = await preflight.readContract({
+  // ── Check smart account USDC balance (for the burn) ───────────────────────
+  const smartAccountUsdc = await preflight.readContract({
     address: fromChain.usdcAddress as Address,
     abi: USDC_READ_ABI,
     functionName: "balanceOf",
-    args: [eoaAddress],
+    args: [smartAccountAddr],
   });
 
-  if (eoaUsdcBalance < burnUnits) {
-    const have = (Number(eoaUsdcBalance) / 1e6).toFixed(6);
+  if (smartAccountUsdc < burnUnits) {
+    const have = (Number(smartAccountUsdc) / 1e6).toFixed(6);
     const need = (Number(burnUnits) / 1e6).toFixed(6);
     throw new Error(
-      `Insufficient USDC in your wallet.\nHave: ${have} USDC — need ${need} USDC.`
+      `Insufficient USDC in your smart account.\n` +
+        `Have: ${have} USDC — need ${need} USDC to bridge.\n` +
+        `Send USDC from your MetaMask wallet to your SimpleAccount address ` +
+        `on ${fromChain.name} first.`
     );
   }
 
@@ -288,17 +242,6 @@ export async function executeBridgeGasless(
     );
   }
 
-  // ── One-time EOA → smart account USDC approval ───────────────────────────
-  // This allows the smart account to pull USDC from the EOA during the UserOp.
-  // After this runs once per chain the approval is reused for all future bridges.
-  await ensureEoaApproval(
-    fromChain,
-    eoaAddress,
-    smartAccountAddr as Address,
-    burnUnits,
-    onStatus
-  );
-
   // ── Build and submit the UserOp ───────────────────────────────────────────
 
   onStatus({
@@ -308,21 +251,14 @@ export async function executeBridgeGasless(
 
   const client = await createBridgeClient(fromChain.id);
 
-  // Call 1: pull USDC from EOA into the smart account
-  const transferFromData = encodeFunctionData({
-    abi: erc20Abi,
-    functionName: "transferFrom",
-    args: [eoaAddress, smartAccountAddr as Address, burnUnits],
-  });
-
-  // Call 2: approve TokenMessenger to spend the pulled USDC
+  // Call 1: approve TokenMessenger to spend the smart account's USDC
   const approveData = encodeFunctionData({
     abi: erc20Abi,
     functionName: "approve",
     args: [fromChain.tokenMessenger as Address, burnUnits],
   });
 
-  // Call 3: burn via CCTP V2
+  // Call 2: burn via CCTP V2
   const burnData = encodeFunctionData({
     abi: DEPOSIT_FOR_BURN_V2,
     functionName: "depositForBurn",
@@ -339,12 +275,11 @@ export async function executeBridgeGasless(
 
   onStatus({
     step: "burning",
-    message: "Sign the UserOperation in your wallet to pull USDC from your wallet and burn…",
+    message: "Sign the UserOperation in your wallet to approve and burn USDC…",
   });
 
   const userOpHash = await client.sendUserOperation({
     calls: [
-      { to: fromChain.usdcAddress as Address, data: transferFromData },
       { to: fromChain.usdcAddress as Address, data: approveData },
       { to: fromChain.tokenMessenger as Address, data: burnData },
     ],
@@ -375,7 +310,7 @@ export async function executeBridgeGasless(
  *
  * Pre-condition: the smart account must hold USDC.
  * To fund the smart account, send USDC from your MetaMask EOA to the
- * smart account address (one regular MetaMask tx — costs a small amount of ETH).
+ * smart account address (one regular MetaMask tx — costs a small amount of native gas).
  */
 export async function depositToPaymasterGasless(
   chain: ChainConfig,
