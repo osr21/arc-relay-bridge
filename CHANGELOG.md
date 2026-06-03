@@ -4,65 +4,80 @@
 
   ---
 
+  ## [2026-06-03] — ERC-4337 Debugging & UI Fixes
+
+  ### Fixed
+
+  - **Stale Paymaster addresses in API server** — `artifacts/api-server/src/routes/paymaster.ts` contained v3/v4 addresses. Updated to v5 on all four chains. Stale addresses caused the gasless relay path to silently reject UserOps against the wrong contract.
+
+  - **EntryPoint had 0 ETH deposited** — All v5 Paymaster contracts had no ETH at the ERC-4337 EntryPoint (`0x0000000071727De22E5E9d8BAf0edAc6f37da032`). Pimlico's bundler simulation rejected every UserOp with `AA31 paymaster deposit too low`. Fixed by running the new `fund-paymaster` script:
+    - Ethereum Sepolia: 0.05 ETH
+    - Base Sepolia: 0.02 ETH
+    - Avalanche Fuji: 0.05 ETH
+
+  - **Bridge page showed EOA balance in gasless mode** — The FROM section displayed the MetaMask EOA's USDC balance when ERC-4337 gasless mode was enabled. But USDC for the burn comes from the *smart account's own wallet*, not the EOA. Entering an amount larger than the smart account wallet held caused a cryptic error with no balance visible to compare against. Fixed:
+    - FROM section now shows **"Smart account wallet: X USDC"** when gasless is active
+    - MAX button caps to smart account wallet balance
+    - Insufficient-balance warning explicitly states the smart account balance
+    - Gasless info banner shows the smart account wallet USDC with a clear distinction from the Paymaster gas vault
+
+  - **Gasless info banner conflated two USDC pools** — The banner said "Your smart account pays gas via its USDC balance in the Paymaster" which confused the Paymaster gas vault (gas fees, ~0.5–2 USDC per bridge) with the smart account wallet balance (bridge burn amount). Both pools are now shown with clear separate labels.
+
+  ### Reverted
+
+  - **EOA approve / transferFrom approach** — An attempt to pull USDC from the MetaMask EOA directly (via a one-time `approve(smartAccount, MaxUint256)` + `transferFrom` in the UserOp) was reverted. The EOA approval itself requires native gas (ETH on Sepolia, AVAX on Fuji), breaking the zero-native-tokens guarantee. Correct model: smart account wallet holds USDC for burns; Paymaster gas vault covers bundler fees.
+
+  ### Added
+
+  - **`scripts/src/fundPaymaster.ts`** — Script to top up EntryPoint ETH deposits for all Paymasters. Supports `--only <chain>` and `--amount <eth>` flags:
+    ```bash
+    pnpm --filter @workspace/scripts run fund-paymaster
+    pnpm --filter @workspace/scripts run fund-paymaster -- --only sepolia --amount 0.05
+    ```
+  - **`deployPaymaster.ts` auto-funds EntryPoint** — After deploying a Paymaster the script now deposits 0.05 ETH at the EntryPoint automatically.
+
+  ---
+
+  ## [Paymaster v5] — 2026-06-01
+
+  ### Fixed (vs v4)
+
+  - **`deductGas` double-charge on concurrent UserOps** — Checked `balances[user]` without accounting for locked funds. Fixed: checks `available = balances[user] - locked[user]`.
+
+  ### Architecture (carried from v4)
+
+  - `validatePaymasterUserOp` has no `nonReentrant` — ERC-7562 forbids global storage writes during validation for unstaked paymasters.
+  - `entryPoint` is a `constant` — keeps single-slot `0x60a0` init; 2-immutable `0x60c0` silently reverts on Arc/Base/Fuji.
+  - Compiled with `evmVersion: "paris"` — Arc Testnet and Fuji reject `PUSH0` (Shanghai).
+
+  ---
+
+  ## [Paymaster v4] — 2026-06-01
+
+  ### Fixed (vs v3)
+
+  - **`nonReentrant` on `validatePaymasterUserOp`** — Removed. Writing to `_locked` (global storage) during validation violates ERC-7562; Pimlico rejects at simulation.
+
+  ---
+
   ## [Paymaster v3] — 2026-06-01
 
   ### Added
 
-  - **ERC-4337 v0.7 gas sponsorship** — The Paymaster contract now implements the full ERC-4337 v0.7 interface accepted by the canonical EntryPoint (`0x0000000071727De22E5E9d8BAf0edAc6f37da032`):
-    - `validatePaymasterUserOp` — validates a UserOperation and reserves the maximum possible USDC cost in a `locked` mapping so the user's available balance is accurately accounted for during bundler simulation
-    - `postOp` — called by the EntryPoint after execution; releases the reservation and charges the actual gas cost in USDC
-  - **Locked-balance reservation system** — `mapping(address => uint256) public locked` tracks how much of each user's deposit is reserved for in-flight UserOperations, preventing double-spending across concurrent ops
-  - **Reentrancy guard** — a `bool private _locked` mutex + `nonReentrant` modifier on all state-modifying user functions (`deposit`, `withdraw`, `validatePaymasterUserOp`, `postOp`, `deductGas`)
-
-  ### Changed
-
-  - **`entryPoint` is now a `constant`** (previously planned as `immutable`). The ERC-4337 v0.7 EntryPoint is deployed via CREATE2 and resolves to the same address on every EVM chain, so hardcoding it as a constant is both correct and avoids a chain-compatibility issue: contracts with two or more `immutable` variables generate a `0x60c0` constructor prefix that silently reverts on Arc Testnet, Base Sepolia, and Avalanche Fuji. The single-immutable `0x60a0` pattern (only `usdc` is immutable) is required for cross-chain compatibility.
-  - **Constructor reduced to 4 parameters** — `_entryPoint` parameter removed; `entryPoint` is now a compile-time constant. Constructor signature: `(address usdc, address relayer, address feeRecipient, uint256 gasRate)`
-  - **Deploy script: `--only` flag** — deploy to a subset of chains without redeploying the rest: `pnpm --filter @workspace/scripts run deploy-paymaster -- --only sepolia` or `--only arc,fuji`
-  - **Deploy script: per-chain gas limits** — Arc Testnet, Base Sepolia, and Avalanche Fuji use an explicit `gasLimit: 3_000_000` override (because their RPCs reject `eth_estimateGas` on failed constructors). Ethereum Sepolia uses auto-estimation to avoid pre-flight balance failures
-
-  ### Deployed addresses (v3)
-
-  | Chain | Address |
-  |---|---|
-  | Arc Testnet | [`0x3fAC0e0F8d8BfE9498d06332582C48Dc32698D65`](https://testnet.arcscan.app/address/0x3fAC0e0F8d8BfE9498d06332582C48Dc32698D65) |
-  | Ethereum Sepolia | [`0xfF57188ea392bA5e91bdf675AAA55f2D8Ba9BdBe`](https://sepolia.etherscan.io/address/0xfF57188ea392bA5e91bdf675AAA55f2D8Ba9BdBe) |
-  | Base Sepolia | [`0x3649C856025FDC0F92EDAc2B52DD53452248bA33`](https://sepolia.basescan.org/address/0x3649C856025FDC0F92EDAc2B52DD53452248bA33) |
-  | Avalanche Fuji | [`0xd9E34Aca62a16a58a4e7144130Be94bD908D368c`](https://testnet.snowtrace.io/address/0xd9E34Aca62a16a58a4e7144130Be94bD908D368c) |
+  - ERC-4337 v0.7 path: `validatePaymasterUserOp` + `postOp`
+  - Dual sponsorship: legacy relayer (`deductGas`) + ERC-4337 path
+  - `locked[user]` reservation prevents double-spend across concurrent UserOps
+  - `MAX_DEDUCTION_PER_TX = 10 USDC` hard cap per call
+  - Emergency pause, two-step ownership, `rescueTokens` (USDC blocked)
 
   ---
 
-  ## [Paymaster v2] — 2025-05-31
+  ## [FeeRouter v2] — 2026-05-23
 
-  ### Added
+  ### Fixed (vs v1)
 
-  - **Paymaster contract** — USDC-based gas sponsorship deployed on all four supported chains. Users pre-deposit USDC; a trusted relayer calls `deductGas` to charge actual gas costs after each sponsored transaction.
-  - **`rescueTokens` USDC block** — `rescueTokens` explicitly rejects rescue of the USDC token address, protecting user deposits from accidental or malicious withdrawal by the owner.
-  - **`setGasRate` cap** — `setGasRate` is capped at `MAX_GAS_RATE` (1 USDC per gas unit, i.e. 1,000,000 in 6-decimal units) to protect users from an owner setting an extreme rate.
-  - **Two-step ownership transfer** — `transferOwnership` + `acceptOwnership` pattern; the new owner must explicitly accept to prevent accidental transfers to wrong addresses.
-  - **Emergency pause** — owner can call `pause()` / `unpause()` to freeze deposits, withdrawals, and sponsorships.
-
-  ---
-
-  ## [FeeRouter v2] — 2025-05-23
-
-  ### Added
-
-  - **FeeRouter contract** — On-chain fee routing that collects a protocol fee before calling CCTP `depositForBurn`. Deployed on all four chains.
-
-  ### Security hardening over v1
-
-  - `usdc` and `tokenMessenger` are immutable — no caller-supplied contract addresses eliminates address substitution attacks
-  - Reentrancy lock on `bridgeWithFee`
-  - Zero `mintRecipient` check — reverts if recipient is `bytes32(0)`
-  - `rescueTokens` checks IERC20 return value
-
-  ### Deployed addresses
-
-  | Chain | Address |
-  |---|---|
-  | Arc Testnet | `0x8256a1e1f8971448b49dA0F55b8A1BB6557eA8FC` |
-  | Ethereum Sepolia | `0x5B1F511ed4dF76f369671BF1c4aCF0dD84CC0804` |
-  | Base Sepolia | `0x8d4B57eD464df10414Dde3ADC2E403a01ebc50d8` |
-  | Avalanche Fuji | `0x64D160b7E91e78e52dFc0e8829640E32A919164C` |
+  - Immutable `usdc` and `tokenMessenger` (no caller-supplied addresses)
+  - Reentrancy lock on all state-changing functions
+  - Zero `mintRecipient` guard
+  - `rescueTokens` checks return value; blocks USDC rescue
   
