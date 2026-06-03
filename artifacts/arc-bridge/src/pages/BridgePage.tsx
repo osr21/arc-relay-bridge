@@ -18,7 +18,7 @@ import { calculateFee, formatUsdc, FEE_BPS, isFeeActive } from "@/lib/config";
 import { BridgeSession, saveSession, loadSession, clearSession } from "@/lib/session";
 import { BridgeHistoryEntry, saveBridgeHistory, loadBridgeHistory } from "@/lib/history";
 import { isAASupported } from "@/lib/aa";
-import { executeBridgeGasless } from "@/lib/gaslessBridge";
+import { executeBridgeGasless, getSmartAccountAddress } from "@/lib/gaslessBridge";
 import { WalletButton } from "@/components/WalletButton";
 import { ChainSelector } from "@/components/ChainSelector";
 import { StepProgress } from "@/components/StepProgress";
@@ -45,6 +45,7 @@ export default function BridgePage() {
   const [fromBalance, setFromBalance]     = useState<string>("—");
   const [toBalance, setToBalance]         = useState<string>("—");
   const [loadingBalances, setLoadingBalances] = useState(false);
+  const [saWalletBalance, setSaWalletBalance] = useState<string>("—");
   const [oraclePrice, setOraclePrice]     = useState<string | null>(null);
 
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({
@@ -82,6 +83,18 @@ export default function BridgePage() {
   }, [walletAddress, fromChain, toChain]);
 
   useEffect(() => { refreshBalances(); }, [refreshBalances]);
+
+  // Load the smart account's own USDC wallet balance whenever gasless mode or source chain changes.
+  // This balance is what actually gets burned — separate from the Paymaster gas vault.
+  useEffect(() => {
+    if (!useGasless || !isAASupported(fromChain.id)) { setSaWalletBalance("—"); return; }
+    let cancelled = false;
+    getSmartAccountAddress(fromChain.id)
+      .then(addr => getUsdcBalance(addr, fromChain))
+      .then(bal => { if (!cancelled) setSaWalletBalance(bal); })
+      .catch(() => { if (!cancelled) setSaWalletBalance("—"); });
+    return () => { cancelled = true; };
+  }, [useGasless, fromChain]);
 
   // Load any saved bridge session on mount
   useEffect(() => {
@@ -346,7 +359,11 @@ export default function BridgePage() {
   const feeBreakdown = grossUnits !== null ? calculateFee(grossUnits) : null;
 
   const walletChain    = walletChainId ? getChainById(walletChainId) : null;
-  const fromBalanceNum = safeParseBalance(fromBalance);
+
+  // In gasless mode the USDC comes from the smart account's own wallet, not the EOA.
+  const gaslessActive    = useGasless && isAASupported(fromChain.id);
+  const effectiveBalance = gaslessActive ? saWalletBalance : fromBalance;
+  const fromBalanceNum   = safeParseBalance(effectiveBalance);
 
   // Insufficient balance — only flag when balance is known (not still loading)
   const insufficientBalance =
@@ -380,7 +397,7 @@ export default function BridgePage() {
     !customRecipientMissing;
 
   function applyMaxBalance() {
-    if (fromBalance !== "—" && fromBalance !== "0.000000") setAmount(fromBalance);
+    if (effectiveBalance !== "—" && effectiveBalance !== "0.000000") setAmount(effectiveBalance);
   }
 
   return (
@@ -530,11 +547,13 @@ export default function BridgePage() {
                   onChange={(c) => setFromChain(c)} disabled={isProcessing} />
                 {walletAddress && (
                   <div className="flex items-center justify-between px-1">
-                    <span className="text-xs text-slate-500">Balance</span>
+                    <span className="text-xs text-slate-500">
+                      {gaslessActive ? "Smart account wallet" : "Balance"}
+                    </span>
                     <button onClick={applyMaxBalance}
                       disabled={!fromBalanceNum || isProcessing}
                       className="text-xs text-[#4F9CF9] hover:text-[#7BB8FB] font-mono transition-colors disabled:text-slate-500 disabled:cursor-default">
-                      {fromBalance} USDC
+                      {effectiveBalance} USDC
                     </button>
                   </div>
                 )}
@@ -566,7 +585,9 @@ export default function BridgePage() {
               {/* Insufficient balance warning */}
               {insufficientBalance && (
                 <p className="text-xs text-red-400 px-1">
-                  Insufficient balance — you have {fromBalance} USDC on {fromChain.shortName}.
+                  {gaslessActive
+                    ? `Insufficient USDC in your smart account — it holds ${effectiveBalance} USDC on ${fromChain.shortName}. Send USDC to the smart account address first.`
+                    : `Insufficient balance — you have ${effectiveBalance} USDC on ${fromChain.shortName}.`}
                 </p>
               )}
 
@@ -711,13 +732,20 @@ export default function BridgePage() {
               {useGasless && isAASupported(fromChain.id) && (
                 <div className="flex items-start gap-2 px-4 py-3 bg-violet-950/20 border border-violet-500/20 rounded-xl">
                   <Info className="w-3.5 h-3.5 text-violet-400 mt-0.5 flex-shrink-0" />
-                  <p className="text-[11px] text-violet-300/80 leading-relaxed">
-                    Your <span className="font-semibold text-violet-300">smart account</span> pays gas via its USDC balance in the Paymaster.
-                    Deposit USDC to the Paymaster first on the{" "}
-                    <a href="/paymaster" className="underline underline-offset-2 hover:text-violet-200 transition-colors">
-                      Paymaster page
-                    </a>. The mint on the destination chain still uses a regular wallet tx.
-                  </p>
+                  <div className="text-[11px] text-violet-300/80 leading-relaxed space-y-1">
+                    <p>
+                      USDC is burned from your{" "}
+                      <span className="font-semibold text-violet-300">smart account wallet</span>{" "}
+                      ({saWalletBalance === "—" ? "loading…" : `${saWalletBalance} USDC available`}).
+                      Gas is paid from the Paymaster gas vault — no ETH or AVAX needed.
+                    </p>
+                    <p>
+                      Need more USDC in the smart account? Send it from MetaMask to the smart account address on the{" "}
+                      <a href="/paymaster" className="underline underline-offset-2 hover:text-violet-200 transition-colors">
+                        Paymaster page
+                      </a>. The mint on the destination chain still uses a regular wallet tx.
+                    </p>
+                  </div>
                 </div>
               )}
 
