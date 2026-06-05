@@ -10,6 +10,7 @@ import {
   switchToChain,
   executeBridge,
   resumeBridge,
+  resumeBridgeGasRelay,
   friendlyError,
   addUsdcToWallet,
   GAS_RELAY_FEE_UNITS,
@@ -234,6 +235,7 @@ export default function BridgePage() {
           amount,
           recipient:    effectiveRecipient,
           savedAt:      Date.now(),
+          useGasRelay:  useGasRelay && !!toChain.gasRelayerAddress,
         });
       }
     };
@@ -286,21 +288,34 @@ export default function BridgePage() {
     lastFeeTxRef.current   = resumeSession.feeTxHash;
     lastMintTxRef.current  = undefined;
 
+    const trackResumeStatus = (status: BridgeStatus) => {
+      setBridgeStatus(status);
+      if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
+      if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
+      if (status.step === "attesting" || status.step === "minting") currentStepRef.current = status.step;
+    };
+
     try {
-      await resumeBridge(
-        from, to,
-        resumeSession.burnTxHash,
-        resumeSession.messageBytes,
-        resumeSession.feeTxHash,
-        (status) => {
-          setBridgeStatus(status);
-          if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
-          if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
-          if (
-            status.step === "attesting" || status.step === "minting"
-          ) currentStepRef.current = status.step;
-        }
-      );
+      if (resumeSession.useGasRelay && to.gasRelayerAddress) {
+        // Gas relay path: burn's mintRecipient was the GasRelayer contract.
+        // Must call the relay API — receiveMessage would mint to GasRelayer, not the user.
+        await resumeBridgeGasRelay(
+          from, to,
+          resumeSession.burnTxHash,
+          resumeSession.messageBytes,
+          resumeSession.feeTxHash,
+          resumeSession.recipient,
+          trackResumeStatus,
+        );
+      } else {
+        await resumeBridge(
+          from, to,
+          resumeSession.burnTxHash,
+          resumeSession.messageBytes,
+          resumeSession.feeTxHash,
+          trackResumeStatus,
+        );
+      }
       clearSession();
       if (lastBurnTxRef.current) {
         saveBridgeHistory({

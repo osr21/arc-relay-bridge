@@ -857,6 +857,15 @@ export async function executeBridge(
       );
     }
 
+    if (relayReceipt.status === 0) {
+      throw new Error(
+        `Relay transaction reverted on-chain — the GasRelayer contract rejected the mint.\n` +
+        `Relay tx: ${relayTxHash}\n` +
+        `Check ${toChain.explorerUrl}/tx/${relayTxHash} for the revert reason. ` +
+        `Your burn is confirmed and the attestation is still valid — contact support for recovery.`
+      );
+    }
+
     const netAmount = formatUsdc(fee.bridgeAmount - GAS_RELAY_FEE_UNITS);
     onStatusChange({
       step: "done",
@@ -1019,5 +1028,96 @@ export async function resumeBridge(
     feeTxHash,
     burnTxHash,
     mintTxHash: mintReceipt.hash,
+  });
+}
+
+// ── Resume — gas relay path ───────────────────────────────────────────────────
+
+/**
+ * Resume an interrupted gas-relay bridge from the attestation step.
+ * Used when the session was saved with useGasRelay=true.
+ *
+ * The burn's mintRecipient was the GasRelayer contract, so we must call
+ * the relay API — NOT receiveMessage directly — to get USDC to the user.
+ */
+export async function resumeBridgeGasRelay(
+  fromChain: ChainConfig,
+  toChain: ChainConfig,
+  burnTxHash: string,
+  messageBytes: string | undefined,
+  feeTxHash: string | undefined,
+  recipientAddress: string,
+  onStatusChange: (status: BridgeStatus) => void
+): Promise<void> {
+  onStatusChange({
+    step: "attesting",
+    message: messageBytes
+      ? "Resuming: waiting for Circle attestation via message hash…"
+      : "Resuming: waiting for Circle attestation…",
+    feeTxHash,
+    burnTxHash,
+    messageBytes,
+  });
+
+  const attestationResult = await pollAttestation(
+    fromChain.cctpDomain,
+    burnTxHash,
+    messageBytes,
+    (msg) => onStatusChange({ step: "attesting", message: msg, feeTxHash, burnTxHash, messageBytes })
+  );
+
+  onStatusChange({
+    step: "minting",
+    message: "Requesting gasless relay — server will mint USDC on your behalf…",
+    feeTxHash,
+    burnTxHash,
+  });
+
+  const relayTxHash = await callGasRelayApi(
+    toChain,
+    attestationResult.message,
+    attestationResult.attestation,
+    recipientAddress,
+    GAS_RELAY_FEE_UNITS * 2n,
+  );
+
+  onStatusChange({
+    step: "minting",
+    message: "Relay submitted — waiting for confirmation on destination chain…",
+    feeTxHash,
+    burnTxHash,
+    mintTxHash: relayTxHash,
+  });
+
+  const destProvider = new ethers.JsonRpcProvider(toChain.rpcUrl);
+  let relayReceipt: ethers.TransactionReceipt | null = null;
+  for (let i = 0; i < 60; i++) {
+    relayReceipt = await destProvider.getTransactionReceipt(relayTxHash);
+    if (relayReceipt) break;
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+
+  if (!relayReceipt) {
+    throw new Error(
+      `Relay transaction submitted (${relayTxHash}) but not yet confirmed. ` +
+      `Check ${toChain.explorerUrl}/tx/${relayTxHash} — your USDC will arrive once it confirms.`
+    );
+  }
+
+  if (relayReceipt.status === 0) {
+    throw new Error(
+      `Relay transaction reverted on-chain — the GasRelayer contract rejected the mint.\n` +
+      `Relay tx: ${relayTxHash}\n` +
+      `Check ${toChain.explorerUrl}/tx/${relayTxHash} for the revert reason. ` +
+      `Your burn is confirmed and the attestation is still valid — contact support for recovery.`
+    );
+  }
+
+  onStatusChange({
+    step: "done",
+    message: `Relay complete! USDC has arrived on ${toChain.name} (relay fee deducted).`,
+    feeTxHash,
+    burnTxHash,
+    mintTxHash: relayReceipt.hash,
   });
 }

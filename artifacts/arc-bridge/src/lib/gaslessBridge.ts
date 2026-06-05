@@ -294,6 +294,13 @@ export async function executeBridgeGasless(
     hash: userOpHash,
   });
 
+  if (!userOpReceipt.success) {
+    throw new Error(
+      "Gasless bridge UserOperation failed — the approve or depositForBurn call reverted on-chain. " +
+      "No USDC was burned. Check your smart account USDC balance and try again."
+    );
+  }
+
   const burnTxHash = userOpReceipt.receipt.transactionHash;
   const logs       = userOpReceipt.receipt.logs as unknown as {
     topics: readonly Hex[];

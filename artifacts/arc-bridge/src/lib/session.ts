@@ -12,6 +12,8 @@ export interface BridgeSession {
   amount: string;
   recipient: string;
   savedAt: number;
+  /** True when the burn's mintRecipient was the GasRelayer contract. Resume must use the relay API. */
+  useGasRelay?: boolean;
 }
 
 const SESSION_KEY = "arc_bridge_session_v1";
