@@ -47,6 +47,8 @@ export default function BridgePage() {
   const [toBalance, setToBalance]         = useState<string>("—");
   const [loadingBalances, setLoadingBalances] = useState(false);
   const [saWalletBalance, setSaWalletBalance] = useState<string>("—");
+  const [saAddress, setSaAddress]             = useState<string | null>(null);
+  const [saAddressCopied, setSaAddressCopied] = useState(false);
   const [oraclePrice, setOraclePrice]     = useState<string | null>(null);
 
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({
@@ -91,13 +93,17 @@ export default function BridgePage() {
   useEffect(() => {
     if (!useGasless || !isAASupported(fromChain.id) || !walletAddress) {
       setSaWalletBalance("—");
+      setSaAddress(null);
       return;
     }
     let cancelled = false;
     getSmartAccountAddress(fromChain.id)
-      .then(addr => getUsdcBalance(addr, fromChain))
+      .then(addr => {
+        if (!cancelled) setSaAddress(addr);
+        return getUsdcBalance(addr, fromChain);
+      })
       .then(bal => { if (!cancelled) setSaWalletBalance(bal); })
-      .catch(() => { if (!cancelled) setSaWalletBalance("—"); });
+      .catch(() => { if (!cancelled) { setSaWalletBalance("—"); setSaAddress(null); } });
     return () => { cancelled = true; };
   }, [useGasless, fromChain, walletAddress]);
 
@@ -751,19 +757,39 @@ export default function BridgePage() {
               {useGasless && isAASupported(fromChain.id) && (
                 <div className="flex items-start gap-2 px-4 py-3 bg-violet-950/20 border border-violet-500/20 rounded-xl">
                   <Info className="w-3.5 h-3.5 text-violet-400 mt-0.5 flex-shrink-0" />
-                  <div className="text-[11px] text-violet-300/80 leading-relaxed space-y-1">
+                  <div className="text-[11px] text-violet-300/80 leading-relaxed space-y-1.5">
                     <p>
                       USDC is burned from your{" "}
                       <span className="font-semibold text-violet-300">smart account wallet</span>{" "}
                       ({saWalletBalance === "—" ? "loading…" : `${saWalletBalance} USDC available`}).
                       Gas is paid from the Paymaster gas vault — no ETH or AVAX needed.
                     </p>
-                    <p>
-                      Need more USDC in the smart account? Send it from MetaMask to the smart account address on the{" "}
-                      <a href="/paymaster" className="underline underline-offset-2 hover:text-violet-200 transition-colors">
-                        Paymaster page
-                      </a>. The mint on the destination chain still uses a regular wallet tx.
-                    </p>
+                    {/* Smart account address — send USDC here to fund the burn */}
+                    <div className="rounded-lg bg-violet-950/40 border border-violet-500/20 px-2.5 py-2">
+                      <p className="text-[10px] text-violet-400/70 mb-1 uppercase tracking-wide">Your smart account address</p>
+                      {saAddress ? (
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[10px] text-violet-200 break-all flex-1 select-all">{saAddress}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(saAddress).then(() => {
+                                setSaAddressCopied(true);
+                                setTimeout(() => setSaAddressCopied(false), 2000);
+                              }).catch(() => {});
+                            }}
+                            className="flex-shrink-0 text-[10px] px-2 py-0.5 rounded bg-violet-700/40 hover:bg-violet-600/50 text-violet-300 transition-colors"
+                          >
+                            {saAddressCopied ? "Copied!" : "Copy"}
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-violet-400/50 text-[10px]">Connect wallet to see address</span>
+                      )}
+                      <p className="text-[10px] text-violet-400/60 mt-1.5">
+                        Send USDC here from MetaMask before bridging.
+                      </p>
+                    </div>
                   </div>
                 </div>
               )}
