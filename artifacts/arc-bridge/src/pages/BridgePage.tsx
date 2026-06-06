@@ -85,17 +85,21 @@ export default function BridgePage() {
 
   useEffect(() => { refreshBalances(); }, [refreshBalances]);
 
-  // Load the smart account's own USDC wallet balance whenever gasless mode or source chain changes.
-  // This balance is what actually gets burned — separate from the Paymaster gas vault.
+  // Load the smart account's own USDC wallet balance whenever gasless mode, source chain,
+  // or connected wallet changes. walletAddress is included so the balance refreshes when
+  // the user connects or switches accounts — the SimpleAccount address derives from the owner EOA.
   useEffect(() => {
-    if (!useGasless || !isAASupported(fromChain.id)) { setSaWalletBalance("—"); return; }
+    if (!useGasless || !isAASupported(fromChain.id) || !walletAddress) {
+      setSaWalletBalance("—");
+      return;
+    }
     let cancelled = false;
     getSmartAccountAddress(fromChain.id)
       .then(addr => getUsdcBalance(addr, fromChain))
       .then(bal => { if (!cancelled) setSaWalletBalance(bal); })
       .catch(() => { if (!cancelled) setSaWalletBalance("—"); });
     return () => { cancelled = true; };
-  }, [useGasless, fromChain]);
+  }, [useGasless, fromChain, walletAddress]);
 
   // Load any saved bridge session on mount
   useEffect(() => {

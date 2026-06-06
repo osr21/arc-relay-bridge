@@ -7,6 +7,10 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+// Replit's shared proxy injects X-Forwarded-For. Trust the first hop so that
+// express-rate-limit can use the real client IP rather than the proxy's address.
+app.set("trust proxy", 1);
+
 app.use(
   pinoHttp({
     logger,
