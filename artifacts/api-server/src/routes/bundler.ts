@@ -7,14 +7,19 @@ const VALID_NETWORKS = new Set(["sepolia", "base-sepolia", "avalanche-fuji"]);
 // Whitelist of JSON-RPC methods the bundler proxy is allowed to forward.
 // Prevents this endpoint from being used as an open proxy for arbitrary Pimlico calls.
 const ALLOWED_METHODS = new Set([
+  // ERC-4337 standard methods
   "eth_sendUserOperation",
   "eth_estimateUserOperationGas",
   "eth_getUserOperationByHash",
   "eth_getUserOperationReceipt",
   "eth_supportedEntryPoints",
+  // Pimlico-specific methods
   "pimlico_getUserOperationGasPrice",
   "pimlico_sendCompressedUserOperation",
   "pimlico_getUserOperationStatus",
+  // Pimlico paymaster methods (used by permissionless for sponsored UserOps)
+  "pm_getPaymasterStubData",
+  "pm_getPaymasterData",
 ]);
 
 router.post("/bundler/:network", async (req, res) => {
