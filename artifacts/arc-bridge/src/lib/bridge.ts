@@ -200,6 +200,33 @@ async function waitForChainSwitch(expectedChainId: number, timeoutMs = 60000): P
 }
 
 /**
+ * Get a signer that is confirmed to be on the expected chain.
+ *
+ * MetaMask has a race condition where eth_chainId briefly reports the new chain
+ * before its internal RPC router has fully switched — waitForChainSwitch returning
+ * is not enough. If we acquire a signer and it reports the wrong chainId, we wait
+ * a short back-off and retry, up to maxRetries times.
+ *
+ * This prevents receiveMessage from being submitted to the old (source) chain
+ * immediately after a wallet_addEthereumChain / wallet_switchEthereumChain call.
+ */
+async function getSignerOnChain(expectedChainId: number, maxRetries = 6): Promise<ethers.JsonRpcSigner> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 500 * attempt));
+    }
+    const provider = await getProvider();
+    const signer   = await provider.getSigner();
+    const network  = await provider.getNetwork();
+    if (Number(network.chainId) === expectedChainId) return signer;
+  }
+  throw new Error(
+    `Wallet is still on the wrong network after ${maxRetries} attempts. ` +
+    `Please switch to the destination chain manually in MetaMask and try again.`
+  );
+}
+
+/**
  * Wait for a transaction receipt with automatic retry on transient network errors.
  *
  * ethers v6 BrowserProvider can throw "underlying network changed" immediately after
@@ -887,8 +914,9 @@ export async function executeBridge(
     await switchToChain(toChain);
     await waitForChainSwitch(toChain.id);
 
-    const destProvider = await getProvider();
-    const destSigner   = await destProvider.getSigner();
+    // Re-verify the signer is on the right chain — MetaMask has a brief race where
+    // eth_chainId reports the new chain before the RPC router has actually switched.
+    const destSigner = await getSignerOnChain(toChain.id);
 
     // Nonce replay check — message may have been minted in a previous attempt
     const alreadyMinted = await checkNonceUsed(attestationResult.message, toChain, destSigner);
@@ -981,8 +1009,9 @@ export async function resumeBridge(
   await switchToChain(toChain);
   await waitForChainSwitch(toChain.id);
 
-  const destProvider = await getProvider();
-  const destSigner   = await destProvider.getSigner();
+  // Re-verify the signer is on the right chain — MetaMask has a brief race where
+  // eth_chainId reports the new chain before the RPC router has actually switched.
+  const destSigner = await getSignerOnChain(toChain.id);
 
   // Nonce replay check — may have already been minted
   const alreadyMinted = await checkNonceUsed(attestationResult.message, toChain, destSigner);
