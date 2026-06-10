@@ -19,8 +19,14 @@ function _resolveComponent(
   );
 }
 
+// Allow only safe path segments: alphanumeric, dash, underscore, forward slash.
+// Prevents path traversal attempts (e.g. "../") from reaching the module map.
+function sanitizeComponentPath(raw: string): string | null {
+  return /^[a-zA-Z0-9_\-/]+$/.test(raw) ? raw : null;
+}
+
 function PreviewRenderer({
-  componentPath,
+  componentPath: rawComponentPath,
   modules,
 }: {
   componentPath: string;
@@ -36,6 +42,11 @@ function PreviewRenderer({
     setError(null);
 
     async function loadComponent(): Promise<void> {
+      const componentPath = sanitizeComponentPath(rawComponentPath);
+      if (!componentPath) {
+        setError(`Invalid component path: ${rawComponentPath}`);
+        return;
+      }
       const key = `./components/mockups/${componentPath}.tsx`;
       const loader = modules[key];
       if (!loader) {
@@ -72,7 +83,7 @@ function PreviewRenderer({
     return () => {
       cancelled = true;
     };
-  }, [componentPath, modules]);
+  }, [rawComponentPath, modules]);
 
   if (error) {
     return (
