@@ -20,6 +20,7 @@ import { BridgeSession, saveSession, loadSession, clearSession } from "@/lib/ses
 import { BridgeHistoryEntry, saveBridgeHistory, loadBridgeHistory } from "@/lib/history";
 import { isAASupported } from "@/lib/aa";
 import { executeBridgeGasless, getSmartAccountAddress } from "@/lib/gaslessBridge";
+import { fetchSmartAccountPaymasterBalance } from "@/lib/paymaster";
 import { WalletButton } from "@/components/WalletButton";
 import { ChainSelector } from "@/components/ChainSelector";
 import { StepProgress } from "@/components/StepProgress";
@@ -46,9 +47,10 @@ export default function BridgePage() {
   const [fromBalance, setFromBalance]     = useState<string>("—");
   const [toBalance, setToBalance]         = useState<string>("—");
   const [loadingBalances, setLoadingBalances] = useState(false);
-  const [saWalletBalance, setSaWalletBalance] = useState<string>("—");
-  const [saAddress, setSaAddress]             = useState<string | null>(null);
-  const [saAddressCopied, setSaAddressCopied] = useState(false);
+  const [saWalletBalance, setSaWalletBalance]       = useState<string>("—");
+  const [saAddress, setSaAddress]                   = useState<string | null>(null);
+  const [saAddressCopied, setSaAddressCopied]       = useState(false);
+  const [saPaymasterBalance, setSaPaymasterBalance] = useState<bigint | null>(null);
   const [oraclePrice, setOraclePrice]     = useState<string | null>(null);
 
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({
@@ -106,6 +108,21 @@ export default function BridgePage() {
       .catch(() => { if (!cancelled) { setSaWalletBalance("—"); setSaAddress(null); } });
     return () => { cancelled = true; };
   }, [useGasless, fromChain, walletAddress]);
+
+  // Fetch the smart account's Paymaster deposit balance whenever gasless mode, chain, or SA address changes.
+  // This is distinct from saWalletBalance — the Paymaster balance is USDC locked inside the
+  // Paymaster contract to pay gas, not the USDC sitting at the smart account address.
+  useEffect(() => {
+    if (!useGasless || !isAASupported(fromChain.id) || !saAddress) {
+      setSaPaymasterBalance(null);
+      return;
+    }
+    let cancelled = false;
+    fetchSmartAccountPaymasterBalance(fromChain, saAddress)
+      .then(({ available }) => { if (!cancelled) setSaPaymasterBalance(available); })
+      .catch(() => { if (!cancelled) setSaPaymasterBalance(null); });
+    return () => { cancelled = true; };
+  }, [useGasless, fromChain, saAddress]);
 
   // Load any saved bridge session on mount
   useEffect(() => {
@@ -410,6 +427,11 @@ export default function BridgePage() {
   const customRecipientMissing =
     useCustomRecipient && recipient.trim() === "";
 
+  // Block gasless bridging when the Paymaster deposit is known to be 0 — the Paymaster
+  // will reject the UserOp at simulation time, wasting the user's time.
+  // null means still loading (don't block), 0n means confirmed empty (block).
+  const saNoPaymasterDeposit = gaslessActive && saPaymasterBalance === 0n;
+
   const canBridge =
     !!walletAddress &&
     amountIsValid &&
@@ -419,7 +441,8 @@ export default function BridgePage() {
     !insufficientBalance &&
     !belowRelayMin &&
     !customRecipientInvalid &&
-    !customRecipientMissing;
+    !customRecipientMissing &&
+    !saNoPaymasterDeposit;
 
   function applyMaxBalance() {
     if (effectiveBalance !== "—" && effectiveBalance !== "0.000000") setAmount(effectiveBalance);
@@ -755,21 +778,67 @@ export default function BridgePage() {
 
               {/* ── Gasless mode info banner ── */}
               {useGasless && isAASupported(fromChain.id) && (
-                <div className="flex items-start gap-2 px-4 py-3 bg-violet-950/20 border border-violet-500/20 rounded-xl">
-                  <Info className="w-3.5 h-3.5 text-violet-400 mt-0.5 flex-shrink-0" />
-                  <div className="text-[11px] text-violet-300/80 leading-relaxed space-y-1.5">
-                    <p>
+                <div className={cn(
+                  "flex items-start gap-2 px-4 py-3 rounded-xl border",
+                  saNoPaymasterDeposit
+                    ? "bg-amber-950/20 border-amber-500/30"
+                    : "bg-violet-950/20 border-violet-500/20"
+                )}>
+                  <Info className={cn("w-3.5 h-3.5 mt-0.5 flex-shrink-0", saNoPaymasterDeposit ? "text-amber-400" : "text-violet-400")} />
+                  <div className="text-[11px] leading-relaxed space-y-1.5 w-full">
+                    <p className={saNoPaymasterDeposit ? "text-amber-300/90" : "text-violet-300/80"}>
                       USDC is burned from your{" "}
-                      <span className="font-semibold text-violet-300">smart account wallet</span>{" "}
+                      <span className="font-semibold">smart account wallet</span>{" "}
                       ({saWalletBalance === "—" ? "loading…" : `${saWalletBalance} USDC available`}).
                       Gas is paid from the Paymaster gas vault — no ETH or AVAX needed.
                     </p>
+
+                    {/* Paymaster gas balance row */}
+                    <div className={cn(
+                      "flex items-center justify-between text-[10px] px-2.5 py-1.5 rounded-lg border",
+                      saNoPaymasterDeposit
+                        ? "bg-amber-950/40 border-amber-500/20"
+                        : "bg-violet-950/40 border-violet-500/20"
+                    )}>
+                      <span className={saNoPaymasterDeposit ? "text-amber-400/80" : "text-violet-400/70"}>
+                        Paymaster gas balance
+                      </span>
+                      <span className={cn(
+                        "font-mono font-semibold",
+                        saPaymasterBalance === null
+                          ? "text-slate-500"
+                          : saNoPaymasterDeposit
+                            ? "text-amber-400"
+                            : "text-violet-200"
+                      )}>
+                        {saPaymasterBalance === null
+                          ? "loading…"
+                          : `${(Number(saPaymasterBalance) / 1e6).toFixed(2)} USDC`}
+                      </span>
+                    </div>
+
+                    {/* Warning when Paymaster deposit is zero */}
+                    {saNoPaymasterDeposit && (
+                      <p className="text-amber-300/80 text-[10px]">
+                        No gas funds deposited — the Paymaster will reject your UserOp.{" "}
+                        <a href="/paymaster" className="underline text-amber-300 hover:text-amber-200 font-medium">
+                          Go to Paymaster → Gasless Bridge Setup
+                        </a>{" "}
+                        to deposit USDC for gas first.
+                      </p>
+                    )}
+
                     {/* Smart account address — send USDC here to fund the burn */}
-                    <div className="rounded-lg bg-violet-950/40 border border-violet-500/20 px-2.5 py-2">
-                      <p className="text-[10px] text-violet-400/70 mb-1 uppercase tracking-wide">Your smart account address</p>
+                    <div className={cn(
+                      "rounded-lg border px-2.5 py-2",
+                      saNoPaymasterDeposit
+                        ? "bg-amber-950/40 border-amber-500/20"
+                        : "bg-violet-950/40 border-violet-500/20"
+                    )}>
+                      <p className={cn("text-[10px] mb-1 uppercase tracking-wide", saNoPaymasterDeposit ? "text-amber-400/70" : "text-violet-400/70")}>Your smart account address</p>
                       {saAddress ? (
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-[10px] text-violet-200 break-all flex-1 select-all">{saAddress}</span>
+                          <span className={cn("font-mono text-[10px] break-all flex-1 select-all", saNoPaymasterDeposit ? "text-amber-200" : "text-violet-200")}>{saAddress}</span>
                           <button
                             type="button"
                             onClick={() => {
@@ -778,7 +847,12 @@ export default function BridgePage() {
                                 setTimeout(() => setSaAddressCopied(false), 2000);
                               }).catch(() => {});
                             }}
-                            className="flex-shrink-0 text-[10px] px-2 py-0.5 rounded bg-violet-700/40 hover:bg-violet-600/50 text-violet-300 transition-colors"
+                            className={cn(
+                              "flex-shrink-0 text-[10px] px-2 py-0.5 rounded transition-colors",
+                              saNoPaymasterDeposit
+                                ? "bg-amber-700/40 hover:bg-amber-600/50 text-amber-300"
+                                : "bg-violet-700/40 hover:bg-violet-600/50 text-violet-300"
+                            )}
                           >
                             {saAddressCopied ? "Copied!" : "Copy"}
                           </button>
@@ -786,7 +860,7 @@ export default function BridgePage() {
                       ) : (
                         <span className="text-violet-400/50 text-[10px]">Connect wallet to see address</span>
                       )}
-                      <p className="text-[10px] text-violet-400/60 mt-1.5">
+                      <p className={cn("text-[10px] mt-1.5", saNoPaymasterDeposit ? "text-amber-400/60" : "text-violet-400/60")}>
                         Send USDC here from MetaMask before bridging.
                       </p>
                     </div>
@@ -963,9 +1037,10 @@ export default function BridgePage() {
                           ? "bg-[#4F9CF9] hover:bg-[#3B8AE8] text-white shadow-lg shadow-[#4F9CF9]/20"
                           : "bg-slate-700 text-slate-500 cursor-not-allowed"
                       )}>
-                      {sameChain      ? "Select different chains" :
-                       !amountIsValid ? "Enter an amount"         :
-                                        "Bridge USDC"}
+                      {sameChain             ? "Select different chains"        :
+                       !amountIsValid         ? "Enter an amount"                :
+                       saNoPaymasterDeposit   ? "Deposit gas funds first"        :
+                                               "Bridge USDC"}
                     </button>
                   )}
                 </>
