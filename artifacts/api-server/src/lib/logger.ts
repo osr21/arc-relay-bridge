@@ -8,6 +8,11 @@ export const logger = pino({
     "req.headers.authorization",
     "req.headers.cookie",
     "res.headers['set-cookie']",
+    // Prevent accidental env-var logging from ever reaching the log stream
+    "DEPLOYER_PRIVATE_KEY",
+    "SESSION_SECRET",
+    "PIMLICO_API_KEY",
+    "FEE_RECIPIENT",
   ],
   ...(isProduction
     ? {}
