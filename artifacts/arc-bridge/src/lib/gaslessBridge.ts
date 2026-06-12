@@ -146,6 +146,13 @@ export async function executeBridgeGasless(
     );
   }
 
+  // Validate recipient address before any contract encoding.
+  // toBytes32Address does left-padding only — an invalid address (wrong length, bad chars)
+  // would produce malformed calldata and a silent on-chain revert.
+  if (!/^0x[0-9a-fA-F]{40}$/.test(recipient)) {
+    throw new Error(`Invalid recipient address: ${recipient}`);
+  }
+
   const trimmedAmount = amount.trim();
   if (/e/i.test(trimmedAmount)) throw new Error("Please enter a plain decimal number (e.g. 1.50).");
   const amountFloat = parseFloat(trimmedAmount);

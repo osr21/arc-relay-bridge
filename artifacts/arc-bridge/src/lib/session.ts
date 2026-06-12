@@ -41,6 +41,9 @@ export function loadSession(): BridgeSession | null {
       // amount must be a plain decimal string (no scientific notation, no injection)
       typeof session.amount !== "string" ||
       !/^\d+(\.\d{1,6})?$/.test(session.amount.trim()) ||
+      // recipient must be a valid 0x-prefixed 20-byte Ethereum address
+      typeof session.recipient !== "string" ||
+      !/^0x[0-9a-fA-F]{40}$/.test(session.recipient) ||
       // messageBytes, if present, must be a 0x-prefixed hex string of reasonable length
       (session.messageBytes !== undefined && (
         typeof session.messageBytes !== "string" ||

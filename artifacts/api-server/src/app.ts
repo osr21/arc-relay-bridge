@@ -98,12 +98,34 @@ const bundlerLimiter = rateLimit({
   message: { error: "Too many bundler requests — please wait a moment." },
 });
 
-app.use("/api/attest",       attestLimiter);
-app.use("/api/relay",        relayLimiter);
-app.use("/api/chains",       chainsLimiter);
-app.use("/api/paymaster",    paymasterLimiter);
-app.use("/api/oracle",       oracleLimiter);
-app.use("/api/bundler",      bundlerLimiter);
+// Gas refuel quote + liquidity: read-only with external CoinGecko + RPC calls.
+// 30/min gives plenty of headroom for legitimate users while blocking floods.
+const gasrefuelReadLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many gas refuel requests — please wait a moment." },
+});
+
+// Gas refuel submit: sends real native-token transactions on behalf of the user.
+// Stricter: 6/min per IP — one every 10 s is more than enough for any legitimate use.
+const gasrefuelSubmitLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 6,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many gas refuel submissions — please wait before retrying." },
+});
+
+app.use("/api/attest",              attestLimiter);
+app.use("/api/relay",               relayLimiter);
+app.use("/api/chains",              chainsLimiter);
+app.use("/api/paymaster",           paymasterLimiter);
+app.use("/api/oracle",              oracleLimiter);
+app.use("/api/bundler",             bundlerLimiter);
+app.use("/api/gasrefuel/submit",    gasrefuelSubmitLimiter);
+app.use("/api/gasrefuel",           gasrefuelReadLimiter);
 app.use("/api", router);
 
 export default app;

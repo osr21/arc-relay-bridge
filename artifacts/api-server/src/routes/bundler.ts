@@ -36,7 +36,24 @@ router.post("/bundler/:network", async (req, res) => {
     return;
   }
 
-  const { method } = req.body ?? {};
+  const body = req.body ?? {};
+
+  // Validate minimal JSON-RPC 2.0 structure before forwarding to Pimlico.
+  // Prevents malformed payloads from reaching the upstream bundler.
+  if (typeof body !== "object" || Array.isArray(body)) {
+    res.status(400).json({ error: "Request body must be a JSON object" });
+    return;
+  }
+  if (body.jsonrpc !== "2.0") {
+    res.status(400).json({ error: "jsonrpc must be \"2.0\"" });
+    return;
+  }
+  if (!Array.isArray(body.params)) {
+    res.status(400).json({ error: "params must be an array" });
+    return;
+  }
+
+  const { method } = body;
   if (typeof method !== "string" || !ALLOWED_METHODS.has(method)) {
     res.status(400).json({ error: `Method not allowed: ${method}` });
     return;

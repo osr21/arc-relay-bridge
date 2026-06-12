@@ -75,6 +75,16 @@ const MAX_USDC = 10_000_000n;      // 10 USDC
 const usedArcTxHashes = new Set<string>();
 const pendingArcTxHashes = new Set<string>();
 
+// ── Deployer address cache ─────────────────────────────────────────────────
+// Derive once at first use rather than re-instantiating a Wallet on every request.
+let _cachedDeployerAddress: string | null = null;
+function getDeployerAddress(privateKey: string): string {
+  if (!_cachedDeployerAddress) {
+    _cachedDeployerAddress = new ethers.Wallet(privateKey).address;
+  }
+  return _cachedDeployerAddress;
+}
+
 // ── Price source: CoinGecko free /simple/price ───────────────────────────────
 // Band oracle on Arc Testnet only has USDC/USD; ETH and AVAX are not available.
 // CoinGecko's free endpoint requires no API key.
@@ -205,7 +215,7 @@ router.get("/gasrefuel/quote", async (req, res) => {
   }
 
   try {
-    const deployerAddress = new ethers.Wallet(privateKey).address;
+    const deployerAddress = getDeployerAddress(privateKey);
 
     const [nativeRate, destProvider] = await Promise.all([
       getNativePrice(chain.bandSymbol),
@@ -246,7 +256,7 @@ router.get("/gasrefuel/liquidity", async (req, res) => {
     return;
   }
 
-  const deployerAddress = new ethers.Wallet(privateKey).address;
+  const deployerAddress = getDeployerAddress(privateKey);
 
   const results = await Promise.allSettled(
     Object.entries(DEST_CHAINS).map(async ([chainIdStr, chain]) => {
@@ -436,13 +446,33 @@ router.post("/gasrefuel/submit", async (req, res) => {
       explorerUrl: `${chain.explorerUrl}/tx/${tx.hash}`,
     });
   } catch (err) {
-    // Send failed — remove from used so the user can retry.
-    // Note: if sendTransaction itself threw after broadcasting (e.g. network timeout),
-    // the tx may still land on-chain. For testnet, allowing retry is the safer UX choice.
-    usedArcTxHashes.delete(normalizedHash);
-    const msg = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
+    const msg = err instanceof Error ? err.message : String(err);
+
+    // Determine whether the transaction was likely broadcast before the error occurred.
+    // Pre-broadcast failures (insufficient funds, nonce clash, invalid params) are safe
+    // to retry — the tx never hit the network.  Post-broadcast failures (network
+    // timeout reading the response, RPC disconnect mid-wait) leave the tx in-flight:
+    // deleting from usedArcTxHashes here would allow a second send and double-pay the
+    // user.  We keep them in usedArcTxHashes in that case so only server-restart
+    // (acceptable for testnet) could allow a retry.
+    const isDefinitelyPreBroadcast =
+      msg.includes("insufficient funds") ||
+      msg.includes("nonce too low") ||
+      msg.includes("invalid argument") ||
+      msg.includes("cannot estimate gas") ||
+      msg.includes("Arc RPC timeout");   // our own timeout before any send attempt
+
+    if (isDefinitelyPreBroadcast) {
+      usedArcTxHashes.delete(normalizedHash);
+    } else {
+      req.log.warn(
+        { arcTxHash, err },
+        "gasrefuel send may have broadcast — keeping usedArcTxHashes entry to prevent double-pay"
+      );
+    }
+
     req.log.error({ err }, "gasrefuel submit error");
-    res.status(502).json({ error: `Fulfillment failed: ${msg}` });
+    res.status(502).json({ error: `Fulfillment failed: ${msg.slice(0, 200)}` });
   } finally {
     // Always release the in-flight lock regardless of outcome
     pendingArcTxHashes.delete(normalizedHash);
