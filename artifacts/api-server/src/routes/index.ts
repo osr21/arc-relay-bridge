@@ -1,12 +1,13 @@
 import { Router, type IRouter } from "express";
-import healthRouter    from "./health";
-import attestRouter    from "./attest";
-import relayRouter     from "./relay";
-import chainsRouter    from "./chains";
-import yieldRouter     from "./yield";
-import paymasterRouter from "./paymaster";
-import oracleRouter    from "./oracle";
-import bundlerRouter   from "./bundler";
+import healthRouter     from "./health";
+import attestRouter     from "./attest";
+import relayRouter      from "./relay";
+import chainsRouter     from "./chains";
+import yieldRouter      from "./yield";
+import paymasterRouter  from "./paymaster";
+import oracleRouter     from "./oracle";
+import bundlerRouter    from "./bundler";
+import gasRefuelRouter  from "./gasrefuel";
 
 const router: IRouter = Router();
 
@@ -18,5 +19,6 @@ router.use(yieldRouter);
 router.use(paymasterRouter);
 router.use(oracleRouter);
 router.use(bundlerRouter);
+router.use(gasRefuelRouter);
 
 export default router;

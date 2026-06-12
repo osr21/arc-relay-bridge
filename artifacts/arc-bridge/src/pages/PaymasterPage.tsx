@@ -508,6 +508,7 @@ export default function PaymasterPage() {
           <div className="flex items-center gap-2">
             <a href="/" className="text-sm text-white/50 hover:text-white transition-colors hidden sm:block">← Bridge</a>
             <a href="/yield" className="text-sm text-white/50 hover:text-white transition-colors hidden sm:block">Yield →</a>
+            <a href="/refuel" className="text-sm text-orange-400/70 hover:text-orange-400 transition-colors hidden sm:block">Refuel →</a>
             <button
               onClick={() => void load(walletAddress ?? undefined)}
               disabled={refreshing || !walletAddress}

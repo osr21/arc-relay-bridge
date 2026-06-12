@@ -471,6 +471,10 @@ export default function BridgePage() {
             className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 font-medium transition-colors">
             Yield ↗
           </a>
+          <a href="/refuel"
+            className="flex items-center gap-1.5 text-xs text-orange-400 hover:text-orange-300 font-medium transition-colors">
+            Refuel ↗
+          </a>
           <a href="https://faucet.circle.com" target="_blank" rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
             Faucet <ExternalLink className="w-3 h-3" />
