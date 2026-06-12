@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import { ethers } from "ethers";
 import { CHAINS, USDC_ABI } from "@/lib/chains";
-import { connectWallet } from "@/lib/bridge";
+import { connectWallet, switchToChain } from "@/lib/bridge";
 import {
   fetchRefuelQuote, submitRefuel, fetchLiquidity,
   usdcToUnits, unitsToUsdc,
@@ -173,21 +173,9 @@ export default function RefuelPage() {
     setResult(null);
 
     try {
-      // Switch to Arc Testnet if needed
+      // Switch to Arc Testnet if needed (try switch first, add only if unknown)
       if (walletChainId !== CHAINS.ARC_TESTNET.id) {
-        await (window.ethereum as { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> }).request({
-          method: "wallet_addEthereumChain",
-          params: [
-            {
-              chainId: CHAINS.ARC_TESTNET.hexId,
-              chainName: CHAINS.ARC_TESTNET.name,
-              rpcUrls: [CHAINS.ARC_TESTNET.rpcUrl],
-              nativeCurrency: CHAINS.ARC_TESTNET.nativeCurrency,
-              blockExplorerUrls: [CHAINS.ARC_TESTNET.explorerUrl],
-            },
-          ],
-        });
-        // Brief wait for chain switch
+        await switchToChain(CHAINS.ARC_TESTNET);
         await new Promise((r) => setTimeout(r, 800));
       }
 
