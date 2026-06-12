@@ -68,7 +68,12 @@ const MIN_USDC = 500_000n;         // 0.5 USDC
 const MAX_USDC = 10_000_000n;      // 10 USDC
 
 // ── Replay protection (in-memory; resets on restart — acceptable for testnet) ─
+// usedArcTxHashes  — permanently fulfilled; blocks all future replays
+// pendingArcTxHashes — currently in-flight; blocks concurrent duplicates
+//   (prevents race-condition double-spend: two concurrent requests with the
+//    same arcTxHash both passing the used-check before either marks it used)
 const usedArcTxHashes = new Set<string>();
+const pendingArcTxHashes = new Set<string>();
 
 // ── Price source: CoinGecko free /simple/price ───────────────────────────────
 // Band oracle on Arc Testnet only has USDC/USD; ETH and AVAX are not available.
@@ -311,10 +316,13 @@ router.post("/gasrefuel/submit", async (req, res) => {
   }
 
   const normalizedHash = arcTxHash.toLowerCase();
-  if (usedArcTxHashes.has(normalizedHash)) {
+  if (usedArcTxHashes.has(normalizedHash) || pendingArcTxHashes.has(normalizedHash)) {
     res.status(409).json({ error: "This Arc transaction has already been fulfilled" });
     return;
   }
+
+  // Mark in-flight immediately — concurrent duplicates will 409 from here on
+  pendingArcTxHashes.add(normalizedHash);
 
   try {
     // Step 1 — verify USDC Transfer on Arc ────────────────────────────────────
@@ -377,6 +385,12 @@ router.post("/gasrefuel/submit", async (req, res) => {
     const nativeRate = await getNativePrice(chain.bandSymbol);
     const nativeWei = calcNativeWei(transferredAmount, nativeRate);
 
+    // Guard: price feed glitch could floor nativeWei to 0 — never send 0
+    if (nativeWei === 0n) {
+      res.status(503).json({ error: "Calculated payout is zero — price feed issue, please try again" });
+      return;
+    }
+
     // Step 3 — check liquidity ────────────────────────────────────────────────
     const destProvider = await getRpcProvider(chain.rpcUrls);
     const liquidity = await destProvider.getBalance(deployerAddress);
@@ -388,7 +402,9 @@ router.post("/gasrefuel/submit", async (req, res) => {
       return;
     }
 
-    // Step 4 — mark used before sending (prevents concurrent replay) ──────────
+    // Step 4 — permanently record fulfillment before sending ──────────────────
+    // pendingArcTxHashes already blocks concurrent duplicates from line 328.
+    // usedArcTxHashes blocks all future replays (survives request lifecycle).
     usedArcTxHashes.add(normalizedHash);
 
     // Step 5 — send native gas ────────────────────────────────────────────────
@@ -420,11 +436,16 @@ router.post("/gasrefuel/submit", async (req, res) => {
       explorerUrl: `${chain.explorerUrl}/tx/${tx.hash}`,
     });
   } catch (err) {
-    // If we marked the hash before the send failed, unmark it so the user can retry
+    // Send failed — remove from used so the user can retry.
+    // Note: if sendTransaction itself threw after broadcasting (e.g. network timeout),
+    // the tx may still land on-chain. For testnet, allowing retry is the safer UX choice.
     usedArcTxHashes.delete(normalizedHash);
     const msg = err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200);
     req.log.error({ err }, "gasrefuel submit error");
     res.status(502).json({ error: `Fulfillment failed: ${msg}` });
+  } finally {
+    // Always release the in-flight lock regardless of outcome
+    pendingArcTxHashes.delete(normalizedHash);
   }
 });
 

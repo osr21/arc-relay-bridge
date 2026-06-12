@@ -235,12 +235,18 @@ export default function RefuelPage() {
   const usdcBalanceFormatted = usdcBalance !== null
     ? (Number(usdcBalance) / 1e6).toFixed(2)
     : null;
+  const hasEnoughUsdc =
+    usdcBalance === null || // unknown — let MetaMask catch it
+    (quote !== null && usdcBalance >= BigInt(quote.usdcAmount));
+
   const canSend =
     !!walletAddress &&
     amountValid &&
     !!quote &&
     !quoteExpired &&
+    !quoteLoading &&
     quote.sufficient &&
+    hasEnoughUsdc &&
     step === "idle";
 
   // ── Render ───────────────────────────────────────────────────────────────────
@@ -495,6 +501,11 @@ export default function RefuelPage() {
                   <p className="text-center text-xs text-amber-400/80">
                     Insufficient {selectedChain.nativeCurrency.symbol} in relayer on {selectedChain.shortName}.
                     Try a smaller amount or try again later.
+                  </p>
+                )}
+                {usdcBalance !== null && quote && !hasEnoughUsdc && (
+                  <p className="text-center text-xs text-red-400/80">
+                    Insufficient USDC balance — you have {usdcBalanceFormatted} USDC on Arc Testnet.
                   </p>
                 )}
               </>
