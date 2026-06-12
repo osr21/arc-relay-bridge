@@ -55,7 +55,12 @@ async function getProvider(chain: typeof CHAIN_CONFIGS[number]): Promise<ethers.
   for (const url of urls) {
     try {
       const p = new ethers.JsonRpcProvider(url);
-      await p.getBlockNumber();
+      await Promise.race([
+        p.getBlockNumber(),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error(`RPC timeout: ${url}`)), 6_000)
+        ),
+      ]);
       return p;
     } catch (err) {
       lastErr = err;
@@ -126,12 +131,16 @@ router.post("/relay", async (req, res) => {
   const { message, attestation, recipient, destChainId, maxFee } = req.body ?? {};
 
   // ── Input validation ──────────────────────────────────────────────────────
-  if (!message || typeof message !== "string" || !/^0x[0-9a-fA-F]+$/.test(message)) {
-    res.status(400).json({ error: "Invalid message — must be 0x-prefixed hex" });
+  // CCTP messages are ~300 bytes (≤ 610 hex chars + 0x prefix).
+  // Allow 4× headroom (2500 chars) to accommodate any future CCTP V2 extensions.
+  if (!message || typeof message !== "string" || !/^0x[0-9a-fA-F]+$/.test(message) || message.length > 2500) {
+    res.status(400).json({ error: "Invalid message — must be 0x-prefixed hex, max 2500 chars" });
     return;
   }
-  if (!attestation || typeof attestation !== "string" || !/^0x[0-9a-fA-F]+$/.test(attestation)) {
-    res.status(400).json({ error: "Invalid attestation — must be 0x-prefixed hex" });
+  // Circle Iris attestations are 65 bytes (secp256k1) = 132 hex chars + 0x prefix.
+  // Allow 8× headroom (270 chars) for multi-sig threshold attestations.
+  if (!attestation || typeof attestation !== "string" || !/^0x[0-9a-fA-F]+$/.test(attestation) || attestation.length > 270) {
+    res.status(400).json({ error: "Invalid attestation — must be 0x-prefixed hex, max 270 chars" });
     return;
   }
   if (!recipient || !ethers.isAddress(recipient)) {

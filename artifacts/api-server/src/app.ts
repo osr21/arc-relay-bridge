@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import helmet from "helmet";
 import pinoHttp from "pino-http";
 import rateLimit from "express-rate-limit";
 import router from "./routes";
@@ -10,6 +11,10 @@ const app: Express = express();
 // Replit's shared proxy injects X-Forwarded-For. Trust the first hop so that
 // express-rate-limit can use the real client IP rather than the proxy's address.
 app.set("trust proxy", 1);
+
+// Security headers — sets X-Content-Type-Options, X-Frame-Options,
+// Strict-Transport-Security, X-Download-Options, etc. and removes X-Powered-By.
+app.use(helmet());
 
 app.use(
   pinoHttp({
@@ -31,8 +36,10 @@ app.use(
   }),
 );
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// 50 kb cap — generous for all legitimate API calls; blocks megabyte payloads
+// that would otherwise be forwarded raw to the Pimlico bundler proxy.
+app.use(express.json({ limit: "50kb" }));
+app.use(express.urlencoded({ extended: true, limit: "50kb" }));
 
 // Attestation polling: 2 req/5s = ~24/min per active bridge.
 // Allow 200/min per IP to support a few concurrent bridges.

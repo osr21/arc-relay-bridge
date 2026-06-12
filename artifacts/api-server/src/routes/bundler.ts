@@ -48,12 +48,16 @@ router.post("/bundler/:network", async (req, res) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req.body),
+      signal: AbortSignal.timeout(20_000),
     });
     const data = await upstream.json();
     res.status(upstream.status).json(data);
   } catch (err) {
+    const isTimeout = err instanceof Error && err.name === "TimeoutError";
     req.log.error({ err }, "Bundler proxy error");
-    res.status(502).json({ error: "Bundler unreachable" });
+    res.status(isTimeout ? 504 : 502).json({
+      error: isTimeout ? "Bundler request timed out" : "Bundler unreachable",
+    });
   }
 });
 
