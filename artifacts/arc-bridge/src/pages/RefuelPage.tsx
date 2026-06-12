@@ -138,7 +138,12 @@ export default function RefuelPage() {
         quoteTimerRef.current = setTimeout(() => setQuoteExpired(true), remaining);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg =
+        err instanceof Error
+          ? err.message
+          : typeof err === "object" && err !== null && "message" in err
+            ? String((err as { message: unknown }).message)
+            : String(err);
       setQuoteError(msg);
       setQuote(null);
     } finally {
@@ -215,7 +220,12 @@ export default function RefuelPage() {
         setUsdcBalance(bal);
       } catch {/* balance refresh is best-effort */}
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg =
+        err instanceof Error
+          ? err.message
+          : typeof err === "object" && err !== null && "message" in err
+            ? String((err as { message: unknown }).message)
+            : String(err);
       setFlowError(msg.slice(0, 200));
       setStep("error");
     }
