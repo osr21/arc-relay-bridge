@@ -35,7 +35,31 @@ app.use(
     },
   }),
 );
-app.use(cors());
+
+// CORS — restrict to the deployment's own domains (REPLIT_DOMAINS env var).
+// REPLIT_DOMAINS is comma-separated (e.g. "arc-relay-bridge.replit.app,<id>.repl.co").
+// In development (REPLIT_DOMAINS not set) allow localhost on any port.
+// No origin = same-origin request (curl, server-to-server) — always allow.
+function buildCorsOrigin(): cors.CorsOptions["origin"] {
+  const raw = process.env["REPLIT_DOMAINS"] ?? "";
+  const domains = raw.split(",").map(d => d.trim()).filter(Boolean);
+
+  if (domains.length === 0) {
+    return (origin, cb) => {
+      if (!origin || /^https?:\/\/localhost(:\d+)?$/.test(origin)) cb(null, true);
+      else cb(null, false);
+    };
+  }
+
+  const allowed = new Set(domains.map(d => `https://${d}`));
+  return (origin, cb) => {
+    if (!origin) return cb(null, true);
+    if (allowed.has(origin)) return cb(null, true);
+    cb(null, false);
+  };
+}
+
+app.use(cors({ origin: buildCorsOrigin(), optionsSuccessStatus: 200, credentials: false }));
 // 50 kb cap — generous for all legitimate API calls; blocks megabyte payloads
 // that would otherwise be forwarded raw to the Pimlico bundler proxy.
 app.use(express.json({ limit: "50kb" }));
@@ -118,6 +142,15 @@ const gasrefuelSubmitLimiter = rateLimit({
   message: { error: "Too many gas refuel submissions — please wait before retrying." },
 });
 
+// Yield rates: fans out to 4 RPC calls per request. 20/min per IP is generous.
+const yieldLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many yield requests — please wait a moment." },
+});
+
 app.use("/api/attest",              attestLimiter);
 app.use("/api/relay",               relayLimiter);
 app.use("/api/chains",              chainsLimiter);
@@ -126,6 +159,7 @@ app.use("/api/oracle",              oracleLimiter);
 app.use("/api/bundler",             bundlerLimiter);
 app.use("/api/gasrefuel/submit",    gasrefuelSubmitLimiter);
 app.use("/api/gasrefuel",           gasrefuelReadLimiter);
+app.use("/api/yield",               yieldLimiter);
 app.use("/api", router);
 
 export default app;

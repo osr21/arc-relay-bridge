@@ -277,9 +277,22 @@ async function waitWithRetry(
       try {
         const staticProvider = new ethers.JsonRpcProvider(url);
         const receipt = await staticProvider.getTransactionReceipt(tx.hash);
-        if (receipt) return receipt;
-      } catch {
-        // try next RPC
+        if (receipt) {
+          // status 0 = reverted on-chain — surface this explicitly rather than
+          // treating a failed receipt as success (callers only check !receipt).
+          if (receipt.status !== 1) {
+            throw new Error(
+              `Transaction was reverted on-chain (status 0). ` +
+              `Check ${chain.explorerUrl}/tx/${tx.hash} for the revert reason.`
+            );
+          }
+          return receipt;
+        }
+      } catch (innerErr) {
+        // Re-throw revert errors immediately — they are definitive, not transient
+        const innerMsg = (innerErr instanceof Error ? innerErr.message : String(innerErr)).toLowerCase();
+        if (innerMsg.includes("reverted on-chain")) throw innerErr;
+        // Otherwise try next RPC
       }
     }
   }
@@ -678,7 +691,7 @@ async function burnWithManualFee(
     // All RPCs were unreachable — simulation inconclusive.
     // Proceed optimistically; if the burn truly reverts the fee tx will be the only loss,
     // but the user has been warned and can see the fee step before approving.
-    console.warn("[bridge] Burn simulation inconclusive — all RPCs unreachable. Proceeding.");
+    // (No console.warn in production — RPC unreachability is not actionable by the user)
   }
 
   // ── Step 2: Transfer fee ───────────────────────────────────────────────

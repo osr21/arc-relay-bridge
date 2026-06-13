@@ -3,6 +3,22 @@ import { ethers } from "ethers";
 
 const router: IRouter = Router();
 
+// ── Relay replay protection ───────────────────────────────────────────────────
+// Key: keccak256(message hex) — uniquely identifies a CCTP message.
+// usedMessages  — permanently fulfilled; blocks all future replays.
+// pendingMessages — currently in-flight; blocks concurrent duplicates.
+const usedMessages    = new Set<string>();
+const pendingMessages = new Set<string>();
+
+// ── Deployer address cache ────────────────────────────────────────────────────
+let _cachedRelayerAddress: string | null = null;
+function getRelayerAddress(privateKey: string): string {
+  if (!_cachedRelayerAddress) {
+    _cachedRelayerAddress = new ethers.Wallet(privateKey).address;
+  }
+  return _cachedRelayerAddress;
+}
+
 // ── Chain configs ─────────────────────────────────────────────────────────────
 // Must stay in sync with artifacts/arc-bridge/src/lib/chains.ts
 
@@ -174,15 +190,26 @@ router.post("/relay", async (req, res) => {
     return;
   }
 
+  // ── Replay protection ─────────────────────────────────────────────────────
+  // Key on keccak256(message) — uniquely identifies a CCTP message.
+  const messageKey = ethers.keccak256(ethers.toUtf8Bytes(message));
+  if (usedMessages.has(messageKey) || pendingMessages.has(messageKey)) {
+    res.status(409).json({ error: "This CCTP message has already been relayed" });
+    return;
+  }
+  pendingMessages.add(messageKey);
+
   // ── Submit relay tx ───────────────────────────────────────────────────────
   let provider: ethers.JsonRpcProvider;
   try {
     provider = await getProvider(chain);
   } catch {
+    pendingMessages.delete(messageKey);
     res.status(503).json({ error: `Cannot connect to ${chain.name} RPC` });
     return;
   }
 
+  void getRelayerAddress(privateKey); // warm cache before wallet construction
   const wallet   = new ethers.Wallet(privateKey, provider);
   const contract = new ethers.Contract(chain.gasRelayerAddress, GAS_RELAYER_ABI, wallet);
 
@@ -208,13 +235,18 @@ router.post("/relay", async (req, res) => {
   try {
     const tx = await contract.relay(message, attestation, recipient, maxFeeBig, overrides);
     txHash = tx.hash;
+    // Mark as permanently fulfilled before returning — prevents replays
+    usedMessages.add(messageKey);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     const reason = (err as { reason?: string })?.reason;
+    pendingMessages.delete(messageKey);
     res.status(500).json({
       error: `Relay transaction failed: ${reason ?? msg.slice(0, 200)}`,
     });
     return;
+  } finally {
+    pendingMessages.delete(messageKey);
   }
 
   res.json({

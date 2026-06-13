@@ -3,6 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+    <!-- Content-Security-Policy:
+         script-src 'self' 'unsafe-inline' — Vite injects inline module preload scripts; unsafe-inline needed for production bundle.
+         style-src 'self' 'unsafe-inline' — Tailwind + shadcn inject inline styles at runtime.
+         connect-src 'self' https: wss: — ethers.js connects to public RPC endpoints (arc.network, publicnode.com, base.org, etc.).
+         frame-ancestors 'none' — prevents clickjacking by disallowing this page inside any iframe.
+         form-action 'self' — no HTML form submissions go off-origin.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https: wss:; frame-ancestors 'none'; form-action 'self';" />
     <title>Arc Relay Bridge</title>
     <meta name="description" content="Arc Relay Bridge — built on Replit. Update this description to reflect the app." />
     <meta name="robots" content="index, follow" />

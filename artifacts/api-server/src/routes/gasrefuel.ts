@@ -472,7 +472,26 @@ router.post("/gasrefuel/submit", async (req, res) => {
     }
 
     req.log.error({ err }, "gasrefuel submit error");
-    res.status(502).json({ error: `Fulfillment failed: ${msg.slice(0, 200)}` });
+
+    // Sanitize — never leak raw RPC URLs or internal addresses in the API response.
+    let userFacingError: string;
+    if (msg.includes("insufficient funds")) {
+      userFacingError = "Relayer has insufficient native token balance. Please try again later.";
+    } else if (msg.includes("nonce too low")) {
+      userFacingError = "Nonce conflict on the relayer — please retry in a moment.";
+    } else if (msg.includes("cannot estimate gas") || msg.includes("estimateGas")) {
+      userFacingError = "Gas estimation failed for the destination chain. The relayer may be misconfigured.";
+    } else if (msg.includes("Arc RPC timeout")) {
+      userFacingError = "Arc network timeout — the burn transaction could not be verified. No native gas was sent.";
+    } else if (msg.includes("USDC transfer reverted")) {
+      userFacingError = "USDC transfer reverted on-chain. Check your balance and allowance.";
+    } else {
+      // Strip any URL-like substrings before returning a truncated message.
+      const sanitized = msg.replace(/https?:\/\/\S+/g, "[rpc]");
+      userFacingError = `Fulfillment failed: ${sanitized.slice(0, 150)}`;
+    }
+
+    res.status(502).json({ error: userFacingError });
   } finally {
     // Always release the in-flight lock regardless of outcome
     pendingArcTxHashes.delete(normalizedHash);
