@@ -110,6 +110,13 @@ export async function switchToChain(chain: ChainConfig): Promise<void> {
       params: [{ chainId: chain.hexId }],
     });
 
+    // MetaMask race: eth_chainId can still report the old chain for ~200-500 ms after
+    // wallet_switchEthereumChain resolves. Without this delay, the verification below
+    // sees the pre-switch chainId and triggers wallet_addEthereumChain unnecessarily —
+    // showing the user a second "Add / Switch Arc Testnet" popup that they then dismiss,
+    // breaking the flow. 400 ms is enough for MetaMask to update its internal state.
+    await new Promise(r => setTimeout(r, 400));
+
     // Verify the switch actually took effect — Arc Testnet can return success without switching.
     const current = await getWalletChainId();
     if (current !== chain.id) {

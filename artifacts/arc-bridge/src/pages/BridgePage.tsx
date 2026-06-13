@@ -301,18 +301,19 @@ export default function BridgePage() {
     }
   }
 
-  async function handleResume() {
-    if (!resumeSession || !walletAddress) return;
-    const from = getChainById(resumeSession.fromChainId);
-    const to   = getChainById(resumeSession.toChainId);
+  async function handleResume(sessionOverride?: BridgeSession) {
+    const activeSession = sessionOverride ?? resumeSession;
+    if (!activeSession || !walletAddress) return;
+    const from = getChainById(activeSession.fromChainId);
+    const to   = getChainById(activeSession.toChainId);
     if (!from || !to) { clearSession(); setResumeSession(null); return; }
 
     setFromChain(from);
     setToChain(to);
     setResumeSession(null);
     currentStepRef.current = null;
-    lastBurnTxRef.current  = resumeSession.burnTxHash;
-    lastFeeTxRef.current   = resumeSession.feeTxHash;
+    lastBurnTxRef.current  = activeSession.burnTxHash;
+    lastFeeTxRef.current   = activeSession.feeTxHash;
     lastMintTxRef.current  = undefined;
 
     const trackResumeStatus = (status: BridgeStatus) => {
@@ -323,23 +324,23 @@ export default function BridgePage() {
     };
 
     try {
-      if (resumeSession.useGasRelay && to.gasRelayerAddress) {
+      if (activeSession.useGasRelay && to.gasRelayerAddress) {
         // Gas relay path: burn's mintRecipient was the GasRelayer contract.
         // Must call the relay API — receiveMessage would mint to GasRelayer, not the user.
         await resumeBridgeGasRelay(
           from, to,
-          resumeSession.burnTxHash,
-          resumeSession.messageBytes,
-          resumeSession.feeTxHash,
-          resumeSession.recipient,
+          activeSession.burnTxHash,
+          activeSession.messageBytes,
+          activeSession.feeTxHash,
+          activeSession.recipient,
           trackResumeStatus,
         );
       } else {
         await resumeBridge(
           from, to,
-          resumeSession.burnTxHash,
-          resumeSession.messageBytes,
-          resumeSession.feeTxHash,
+          activeSession.burnTxHash,
+          activeSession.messageBytes,
+          activeSession.feeTxHash,
           trackResumeStatus,
         );
       }
@@ -348,7 +349,7 @@ export default function BridgePage() {
         saveBridgeHistory({
           fromChainId: from.id,
           toChainId:   to.id,
-          amount:      resumeSession?.amount ?? "",
+          amount:      activeSession.amount ?? "",
           burnTxHash:  lastBurnTxRef.current,
           mintTxHash:  lastMintTxRef.current,
           completedAt: Date.now(),
@@ -547,7 +548,7 @@ export default function BridgePage() {
                     <div className="flex gap-1.5 flex-shrink-0">
                       {walletAddress ? (
                         <button
-                          onClick={handleResume}
+                          onClick={() => void handleResume()}
                           className="text-xs font-semibold text-[#4F9CF9] border border-[#4F9CF9]/40 px-3 py-1.5 rounded-lg hover:bg-[#4F9CF9]/10 transition-all whitespace-nowrap"
                         >
                           Resume
@@ -952,7 +953,7 @@ export default function BridgePage() {
                     </div>
                   )}
 
-                  {/* Status message — special layout for attestation timeout */}
+                  {/* Status message — special layouts for known failure modes */}
                   {bridgeStatus.step === "error" && bridgeStatus.error?.startsWith("Attestation timed out") ? (
                     <div className="space-y-2">
                       <p className="text-xs text-red-400 text-center font-medium">
@@ -968,6 +969,34 @@ export default function BridgePage() {
                           <TxLink hash={bridgeStatus.burnTxHash} chain={fromChain} />
                         </div>
                       )}
+                    </div>
+                  ) : bridgeStatus.step === "error" && bridgeStatus.failedAtStep === "minting" ? (
+                    /* Mint-step failure: the burn and attestation are already complete.
+                       Session is saved — the user just needs to switch to the destination
+                       chain and retry the mint without restarting the whole bridge. */
+                    <div className="space-y-3">
+                      <p className="text-xs text-amber-400 text-center font-medium">
+                        Network switch failed — your USDC burn is safe.
+                      </p>
+                      <p className="text-xs text-slate-400 text-center leading-relaxed">
+                        The burn and attestation are confirmed. Switch MetaMask to{" "}
+                        <span className="text-slate-300 font-medium">{toChain.name}</span> and
+                        complete the mint without restarting.
+                      </p>
+                      {walletAddress && (
+                        <button
+                          onClick={() => {
+                            const saved = loadSession();
+                            if (saved) void handleResume(saved);
+                          }}
+                          className="w-full py-2.5 text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 hover:border-amber-400/60 rounded-xl transition-all"
+                        >
+                          Switch to {toChain.name} and complete mint
+                        </button>
+                      )}
+                      <p className="text-xs text-red-400 text-center opacity-70">
+                        {bridgeStatus.error}
+                      </p>
                     </div>
                   ) : (
                     <p className={cn(
