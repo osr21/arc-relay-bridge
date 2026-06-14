@@ -8,6 +8,7 @@ import paymasterRouter  from "./paymaster";
 import oracleRouter     from "./oracle";
 import bundlerRouter    from "./bundler";
 import gasRefuelRouter  from "./gasrefuel";
+import contractsRouter  from "./contracts";
 
 const router: IRouter = Router();
 
@@ -20,5 +21,6 @@ router.use(paymasterRouter);
 router.use(oracleRouter);
 router.use(bundlerRouter);
 router.use(gasRefuelRouter);
+router.use(contractsRouter);
 
 export default router;
