@@ -1,0 +1,42 @@
+{
+  "deployedAt": "2026-06-16T04:43:14.665Z",
+  "partial": false,
+  "results": [
+    {
+      "chainId": 5042002,
+      "name": "Arc Testnet",
+      "paymaster": "0xEE39e1690F1bE07e8a68813f57cE3142197CECf6",
+      "gasRelayer": "0xf89773D7d9C43c01203793bf991e2550975a0C49",
+      "feeRouter": "0x0812a44BDB8975d1Fa1DA93726385Bc4dDC31C6A",
+      "yieldVault": "0xFf8f0Fc1Cca51ddE49ee1E7083D36CC99Af01665",
+      "errors": []
+    },
+    {
+      "chainId": 11155111,
+      "name": "Ethereum Sepolia",
+      "paymaster": "0xe7ED22eF9Af9CAd98B048979dbd726e89dd0D417",
+      "gasRelayer": "0x5eA2A91629245074D01EFf64fc223233c2a805E6",
+      "feeRouter": "0x9d54E104680D2C80FE117e1A66862f619F0a4cBa",
+      "yieldVault": "0xd4a11E7C3512A5c9C09E0296bB06490244476673",
+      "errors": []
+    },
+    {
+      "chainId": 84532,
+      "name": "Base Sepolia",
+      "paymaster": "0x5f309aE9A9A364Ae18af77b7733bB9C43A032A4A",
+      "gasRelayer": "0x5bE70628f49aFb90D81d169bff1533F437B967BB",
+      "feeRouter": "0x245aB059961D5D4A29D2fDf6AefA75b029Ed445d",
+      "yieldVault": "0x0D3B7bd972F4Cc3CDAB62E1cFafcA79F8d7167f5",
+      "errors": []
+    },
+    {
+      "chainId": 43113,
+      "name": "Avalanche Fuji",
+      "paymaster": "0x0D3B7bd972F4Cc3CDAB62E1cFafcA79F8d7167f5",
+      "gasRelayer": "0x53183000a7Ae24AE9F1126271a66Eff1161a58Ec",
+      "feeRouter": "0xce4794207CFCCDC06B283b6942f5BB44a32F5398",
+      "yieldVault": "0xEE39e1690F1bE07e8a68813f57cE3142197CECf6",
+      "errors": []
+    }
+  ]
+}

@@ -55,7 +55,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     cctpVersion: 2,
     minFinalityThreshold: 2000,
     gasLimitOverride: 600000n,
-    gasRelayerAddress: "0x837D9a19C07bb7B4E95071dC0BaED72D4dE04ea1",
+    gasRelayerAddress: "0xf89773D7d9C43c01203793bf991e2550975a0C49",
     logoColor: "#354457",
   },
   ETH_SEPOLIA: {
@@ -76,7 +76,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     cctpVersion: 2,
     minFinalityThreshold: 0,
-    gasRelayerAddress: "0x5E87F210043D8457caCAd0F0c9aB70a99497Eec9",
+    gasRelayerAddress: "0x5eA2A91629245074D01EFf64fc223233c2a805E6",
     logoColor: "#627EEA",
   },
   BASE_SEPOLIA: {
@@ -97,7 +97,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     cctpVersion: 2,
     minFinalityThreshold: 0,
-    gasRelayerAddress: "0x64D160b7E91e78e52dFc0e8829640E32A919164C",
+    gasRelayerAddress: "0x5bE70628f49aFb90D81d169bff1533F437B967BB",
     logoColor: "#0052FF",
   },
   AVAX_FUJI: {
@@ -117,7 +117,7 @@ export const CHAINS: Record<string, ChainConfig> = {
     nativeCurrency: { name: "AVAX", symbol: "AVAX", decimals: 18 },
     cctpVersion: 2,
     minFinalityThreshold: 0,
-    gasRelayerAddress: "0x6F80056564491425273A6a481EcC5DAea9D57f23",
+    gasRelayerAddress: "0x53183000a7Ae24AE9F1126271a66Eff1161a58Ec",
     logoColor: "#E84142",
   },
 };
