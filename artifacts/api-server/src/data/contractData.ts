@@ -1091,7 +1091,26 @@ export const FEE_ROUTER_ABI: AbiEntry[] = [
       {
         "indexed": true,
         "internalType": "address",
-        "name": "oldOwner",
+        "name": "previousOwner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "newOwner",
+        "type": "address"
+      }
+    ],
+    "name": "OwnershipTransferStarted",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "previousOwner",
         "type": "address"
       },
       {
@@ -1115,6 +1134,13 @@ export const FEE_ROUTER_ABI: AbiEntry[] = [
       }
     ],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "acceptOwnership",
+    "outputs": [],
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {
@@ -1180,6 +1206,19 @@ export const FEE_ROUTER_ABI: AbiEntry[] = [
   {
     "inputs": [],
     "name": "owner",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "pendingOwner",
     "outputs": [
       {
         "internalType": "address",
@@ -1304,6 +1343,11 @@ export const YIELD_VAULT_ABI: AbiEntry[] = [
   },
   {
     "inputs": [],
+    "name": "CannotRescueUsdc",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "NoPosition",
     "type": "error"
   },
@@ -1319,7 +1363,17 @@ export const YIELD_VAULT_ABI: AbiEntry[] = [
   },
   {
     "inputs": [],
+    "name": "Reentrant",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "TransferFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ZeroAddress",
     "type": "error"
   },
   {
