@@ -124,6 +124,19 @@ export default function BridgePage() {
     return () => { cancelled = true; };
   }, [useGasless, fromChain, saAddress]);
 
+  // Pre-select source chain from URL param (?from=chainId) — used by Portfolio "Bridge to Arc" links
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fromParam = params.get("from");
+    if (fromParam) {
+      const chain = getChainById(parseInt(fromParam, 10));
+      if (chain && chain.id !== CHAINS.ARC_TESTNET.id) {
+        setFromChain(chain);
+        setToChain(CHAINS.ARC_TESTNET);
+      }
+    }
+  }, []);
+
   // Load any saved bridge session on mount
   useEffect(() => {
     const session = loadSession();
@@ -464,6 +477,10 @@ export default function BridgePage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
+          <a href="/portfolio"
+            className="flex items-center gap-1.5 text-xs text-[#4F9CF9] hover:text-blue-300 font-medium transition-colors">
+            Portfolio ↗
+          </a>
           <a href="/paymaster"
             className="flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 font-medium transition-colors">
             Paymaster ↗
@@ -1152,6 +1169,22 @@ export default function BridgePage() {
                 <div className="text-[10px] text-slate-500">circlefin/arc-node</div>
               </div>
               <ExternalLink className="w-3 h-3 text-slate-600 group-hover:text-[#4F9CF9] ml-auto transition-colors" />
+            </a>
+            <a href="/ecosystem"
+              className="flex items-center gap-2 px-3 py-2 bg-[#111827]/60 border border-white/[0.05] rounded-xl hover:border-[#4F9CF9]/30 transition-all group">
+              <span className="w-5 h-5 rounded-full bg-[#354457] flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0">⬡</span>
+              <div className="min-w-0">
+                <div className="text-xs text-white font-medium truncate">About this app</div>
+                <div className="text-[10px] text-slate-500">Ecosystem · Sample App</div>
+              </div>
+            </a>
+            <a href="/developers"
+              className="flex items-center gap-2 px-3 py-2 bg-[#111827]/60 border border-white/[0.05] rounded-xl hover:border-[#4F9CF9]/30 transition-all group">
+              <span className="w-5 h-5 rounded-full bg-indigo-600/30 flex items-center justify-center text-[10px] font-bold text-indigo-300 flex-shrink-0">&lt;/&gt;</span>
+              <div className="min-w-0">
+                <div className="text-xs text-white font-medium truncate">Developers</div>
+                <div className="text-[10px] text-slate-500">App Kit · CCTP guide</div>
+              </div>
             </a>
           </div>
           {/* ── Bridge History ── */}
