@@ -347,6 +347,11 @@ router.post("/gasrefuel/submit", async (req, res) => {
       return;
     }
 
+    if (receipt.status !== 1) {
+      res.status(400).json({ error: "Arc transaction reverted — no USDC was transferred" });
+      return;
+    }
+
     const deployerWallet = new ethers.Wallet(privateKey);
     const deployerAddress = deployerWallet.address;
     const iface = new ethers.Interface(USDC_TRANSFER_ABI);

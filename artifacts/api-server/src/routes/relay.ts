@@ -4,7 +4,8 @@ import { ethers } from "ethers";
 const router: IRouter = Router();
 
 // ── Relay replay protection ───────────────────────────────────────────────────
-// Key: keccak256(message hex) — uniquely identifies a CCTP message.
+// Key: keccak256(messageBytes) — matches the canonical CCTP message hash used
+// by Circle's Iris API.  Uniquely identifies a CCTP message.
 // usedMessages  — permanently fulfilled; blocks all future replays.
 // pendingMessages — currently in-flight; blocks concurrent duplicates.
 const usedMessages    = new Set<string>();
@@ -21,6 +22,7 @@ function getRelayerAddress(privateKey: string): string {
 
 // ── Chain configs ─────────────────────────────────────────────────────────────
 // Must stay in sync with artifacts/arc-bridge/src/lib/chains.ts
+// GasRelayer addresses: v2-hardened (deployed 2026-06-16)
 
 const CHAIN_CONFIGS: Record<number, {
   name: string;
@@ -33,26 +35,26 @@ const CHAIN_CONFIGS: Record<number, {
     name: "Arc Testnet",
     rpcUrl: "https://rpc.drpc.testnet.arc.network",
     rpcFallbacks: ["https://rpc.testnet.arc.network"],
-    gasRelayerAddress: "0x837D9a19C07bb7B4E95071dC0BaED72D4dE04ea1",
+    gasRelayerAddress: "0xf89773D7d9C43c01203793bf991e2550975a0C49",
     gasLimitOverride: 600_000n,
   },
   11155111: {
     name: "Ethereum Sepolia",
     rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
     rpcFallbacks: ["https://sepolia.drpc.org", "https://1rpc.io/sepolia"],
-    gasRelayerAddress: "0x5E87F210043D8457caCAd0F0c9aB70a99497Eec9",
+    gasRelayerAddress: "0x5eA2A91629245074D01EFf64fc223233c2a805E6",
   },
   84532: {
     name: "Base Sepolia",
     rpcUrl: "https://sepolia.base.org",
     rpcFallbacks: ["https://base-sepolia.drpc.org", "https://base-sepolia-rpc.publicnode.com"],
-    gasRelayerAddress: "0x64D160b7E91e78e52dFc0e8829640E32A919164C",
+    gasRelayerAddress: "0x5bE70628f49aFb90D81d169bff1533F437B967BB",
   },
   43113: {
     name: "Avalanche Fuji",
     rpcUrl: "https://api.avax-test.network/ext/bc/C/rpc",
     rpcFallbacks: ["https://avalanche-fuji.drpc.org"],
-    gasRelayerAddress: "0x6F80056564491425273A6a481EcC5DAea9D57f23",
+    gasRelayerAddress: "0x53183000a7Ae24AE9F1126271a66Eff1161a58Ec",
   },
 };
 
@@ -191,8 +193,9 @@ router.post("/relay", async (req, res) => {
   }
 
   // ── Replay protection ─────────────────────────────────────────────────────
-  // Key on keccak256(message) — uniquely identifies a CCTP message.
-  const messageKey = ethers.keccak256(ethers.toUtf8Bytes(message));
+  // Key on keccak256(messageBytes) — matches the canonical CCTP message hash.
+  // message is a 0x-prefixed hex string; keccak256 decodes it to bytes first.
+  const messageKey = ethers.keccak256(message);
   if (usedMessages.has(messageKey) || pendingMessages.has(messageKey)) {
     res.status(409).json({ error: "This CCTP message has already been relayed" });
     return;
@@ -213,15 +216,28 @@ router.post("/relay", async (req, res) => {
   const wallet   = new ethers.Wallet(privateKey, provider);
   const contract = new ethers.Contract(chain.gasRelayerAddress, GAS_RELAYER_ABI, wallet);
 
+  // ── Check paused before reading fee ──────────────────────────────────────
+  let isPaused: boolean;
   let relayFeeOnChain: bigint;
   try {
-    relayFeeOnChain = await contract.relayFee() as bigint;
+    [isPaused, relayFeeOnChain] = await Promise.all([
+      contract.paused() as Promise<boolean>,
+      contract.relayFee() as Promise<bigint>,
+    ]);
   } catch {
-    res.status(503).json({ error: "Failed to read relay fee from contract" });
+    pendingMessages.delete(messageKey);
+    res.status(503).json({ error: "Failed to read relay contract state" });
+    return;
+  }
+
+  if (isPaused) {
+    pendingMessages.delete(messageKey);
+    res.status(503).json({ error: "Relay service is temporarily paused — please try again later" });
     return;
   }
 
   if (relayFeeOnChain > maxFeeBig) {
+    pendingMessages.delete(messageKey);
     res.status(400).json({
       error: `Current relay fee (${relayFeeOnChain.toString()} units) exceeds your maxFee (${maxFee} units)`,
     });

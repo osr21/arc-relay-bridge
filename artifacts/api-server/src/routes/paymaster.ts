@@ -19,12 +19,13 @@ interface ChainInfo {
   explorerUrl: string;
 }
 
+// Paymaster addresses: v6-hardened (deployed 2026-06-16)
 const CHAINS: ChainInfo[] = [
   {
     name: "Arc Testnet",
     chainId: 5042002,
     rpcUrl: "https://rpc.drpc.testnet.arc.network",
-    paymasterAddress: "0xfD06D288d481515a986DF28030AF013De290D76C", // v5
+    paymasterAddress: "0xEE39e1690F1bE07e8a68813f57cE3142197CECf6",
     usdc: "0x3600000000000000000000000000000000000000",
     explorerUrl: "https://testnet.arcscan.app",
   },
@@ -32,7 +33,7 @@ const CHAINS: ChainInfo[] = [
     name: "Ethereum Sepolia",
     chainId: 11155111,
     rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
-    paymasterAddress: "0xC9E9ba0bfE58FA438B8B6f2182d3ADA3669F9Eb4", // v5
+    paymasterAddress: "0xe7ED22eF9Af9CAd98B048979dbd726e89dd0D417",
     usdc: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
     explorerUrl: "https://sepolia.etherscan.io",
   },
@@ -40,7 +41,7 @@ const CHAINS: ChainInfo[] = [
     name: "Base Sepolia",
     chainId: 84532,
     rpcUrl: "https://sepolia.base.org",
-    paymasterAddress: "0xe355E9dCdEAB37eA8fd81b9457Ad2C56d3eE9055", // v5
+    paymasterAddress: "0x5f309aE9A9A364Ae18af77b7733bB9C43A032A4A",
     usdc: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
     explorerUrl: "https://sepolia.basescan.org",
   },
@@ -48,7 +49,7 @@ const CHAINS: ChainInfo[] = [
     name: "Avalanche Fuji",
     chainId: 43113,
     rpcUrl: "https://api.avax-test.network/ext/bc/C/rpc",
-    paymasterAddress: "0x7C75A75B59b63871e1Bb47fA63e541F0e5975f93", // v5
+    paymasterAddress: "0x0D3B7bd972F4Cc3CDAB62E1cFafcA79F8d7167f5",
     usdc: "0x5425890298aed601595a70AB815c96711a31Bc65",
     explorerUrl: "https://testnet.snowtrace.io",
   },
