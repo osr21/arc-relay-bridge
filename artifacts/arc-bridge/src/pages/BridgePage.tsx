@@ -404,7 +404,7 @@ export default function BridgePage() {
     bridgeStatus.step !== "error";
 
   const parsedAmount   = parseFloat(amount);
-  const amountIsValid  = amount !== "" && !isNaN(parsedAmount) && parsedAmount > 0;
+  const amountIsValid  = amount !== "" && !isNaN(parsedAmount) && parsedAmount > 0 && !/e/i.test(amount.trim());
   const sameChain      = fromChain.id === toChain.id;
   const feeEnabled     = isFeeActive();
 

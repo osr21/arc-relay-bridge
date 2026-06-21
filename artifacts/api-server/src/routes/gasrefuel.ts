@@ -375,9 +375,19 @@ router.post("/gasrefuel/submit", async (req, res) => {
       }
     }
 
-    if (transferredAmount === null) {
+    if (transferredAmount === null || senderAddress === null) {
       res.status(400).json({
         error: "No USDC transfer to the refuel deposit address found in this transaction",
+      });
+      return;
+    }
+
+    // Anti-front-run: verify the recipient matches the USDC sender.
+    // Without this check, anyone watching Arc could race to claim the payout
+    // to their own address using a victim's arcTxHash.
+    if (recipient.toLowerCase() !== senderAddress.toLowerCase()) {
+      res.status(400).json({
+        error: "Recipient must match the address that sent USDC — submit from the sending wallet.",
       });
       return;
     }

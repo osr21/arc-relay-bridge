@@ -42,9 +42,9 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 | Chain | CCTP Domain | Chain ID | minFinalityThreshold |
 |---|---|---|---|
 | Arc Testnet | 26 | 5042002 | 2000 (finalized) |
-| Ethereum Sepolia | 0 | 11155111 | 1000 (safe) |
-| Base Sepolia | 6 | 84532 | 1000 (safe) |
-| Avalanche Fuji | 1 | 43113 | 1000 (safe) |
+| Ethereum Sepolia | 0 | 11155111 | 0 (fast — testnet only) |
+| Base Sepolia | 6 | 84532 | 0 (fast — testnet only) |
+| Avalanche Fuji | 1 | 43113 | 0 (fast — testnet only) |
 
 ## Contract Addresses (same on all chains)
 

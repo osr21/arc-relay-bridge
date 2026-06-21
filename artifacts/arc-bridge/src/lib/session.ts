@@ -44,10 +44,10 @@ export function loadSession(): BridgeSession | null {
       // recipient must be a valid 0x-prefixed 20-byte Ethereum address
       typeof session.recipient !== "string" ||
       !/^0x[0-9a-fA-F]{40}$/.test(session.recipient) ||
-      // messageBytes, if present, must be a 0x-prefixed hex string of reasonable length
+      // messageBytes, if present, must be a 0x-prefixed hex string of even byte pairs (valid bytes)
       (session.messageBytes !== undefined && (
         typeof session.messageBytes !== "string" ||
-        !/^0x[0-9a-fA-F]{2,2048}$/.test(session.messageBytes)
+        !/^0x([0-9a-fA-F]{2}){1,1024}$/.test(session.messageBytes)
       ))
     ) {
       clearSession();

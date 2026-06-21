@@ -149,16 +149,26 @@ router.post("/relay", async (req, res) => {
   const { message, attestation, recipient, destChainId, maxFee } = req.body ?? {};
 
   // ── Input validation ──────────────────────────────────────────────────────
-  // CCTP messages are ~300 bytes (≤ 610 hex chars + 0x prefix).
+  // CCTP messages are ~300 bytes (≤ 610 hex chars + 0x prefix); minimum ~140 bytes = 282 chars.
   // Allow 4× headroom (2500 chars) to accommodate any future CCTP V2 extensions.
-  if (!message || typeof message !== "string" || !/^0x[0-9a-fA-F]+$/.test(message) || message.length > 2500) {
-    res.status(400).json({ error: "Invalid message — must be 0x-prefixed hex, max 2500 chars" });
+  // Enforce even hex length — each byte is exactly 2 hex chars.
+  if (
+    !message || typeof message !== "string" ||
+    !/^0x([0-9a-fA-F]{2})+$/.test(message) ||
+    message.length < 284 || message.length > 2500
+  ) {
+    res.status(400).json({ error: "Invalid message — must be 0x-prefixed even-length hex, 284–2500 chars" });
     return;
   }
-  // Circle Iris attestations are 65 bytes (secp256k1) = 132 hex chars + 0x prefix.
+  // Circle Iris attestations are 65 bytes (secp256k1) = 132 hex chars + 0x prefix = 134 chars minimum.
   // Allow 8× headroom (270 chars) for multi-sig threshold attestations.
-  if (!attestation || typeof attestation !== "string" || !/^0x[0-9a-fA-F]+$/.test(attestation) || attestation.length > 270) {
-    res.status(400).json({ error: "Invalid attestation — must be 0x-prefixed hex, max 270 chars" });
+  // Enforce even hex length.
+  if (
+    !attestation || typeof attestation !== "string" ||
+    !/^0x([0-9a-fA-F]{2})+$/.test(attestation) ||
+    attestation.length < 134 || attestation.length > 270
+  ) {
+    res.status(400).json({ error: "Invalid attestation — must be 0x-prefixed even-length hex, 134–270 chars" });
     return;
   }
   if (!recipient || !ethers.isAddress(recipient)) {
