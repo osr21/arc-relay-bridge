@@ -67,6 +67,12 @@ const SERVICE_FEE_BPS = 500n;      // 5% — covers relayer gas costs
 const MIN_USDC = 500_000n;         // 0.5 USDC
 const MAX_USDC = 10_000_000n;      // 10 USDC
 
+// Minimum native-token reserve kept in the relayer wallet after each send.
+// A simple ETH/AVAX transfer costs 21 000 gas. At up to 25 gwei that is
+// ~525 000 gwei (~0.000525 ETH/AVAX). We keep 10× headroom so the relayer
+// never lands in a state where it has native tokens but cannot broadcast.
+const GAS_RESERVE_WEI = 5_250_000_000_000n; // ≈ 0.00525 ETH/AVAX
+
 // ── Replay protection (in-memory; resets on restart — acceptable for testnet) ─
 // usedArcTxHashes  — permanently fulfilled; blocks all future replays
 // pendingArcTxHashes — currently in-flight; blocks concurrent duplicates
@@ -420,7 +426,7 @@ router.post("/gasrefuel/submit", async (req, res) => {
     const destProvider = await getRpcProvider(chain.rpcUrls);
     const liquidity = await destProvider.getBalance(deployerAddress);
 
-    if (liquidity < nativeWei) {
+    if (liquidity < nativeWei + GAS_RESERVE_WEI) {
       res.status(503).json({
         error: `Insufficient ${chain.symbol} liquidity on ${chain.name}. Available: ${ethers.formatEther(liquidity)} ${chain.symbol}`,
       });

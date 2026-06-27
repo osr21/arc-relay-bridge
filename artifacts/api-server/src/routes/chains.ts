@@ -12,7 +12,7 @@ const CHAIN_DEFS = [
     shortName: "Arc",
     cctpDomain: 26,
     usdcAddress: "0x3600000000000000000000000000000000000000",
-    gasRelayerAddress: "0x837D9a19C07bb7B4E95071dC0BaED72D4dE04ea1",
+    gasRelayerAddress: "0xf89773D7d9C43c01203793bf991e2550975a0C49", // v2-hardened
     explorerUrl: "https://testnet.arcscan.app",
     rpcUrl: "https://rpc.drpc.testnet.arc.network",
   },
@@ -22,7 +22,7 @@ const CHAIN_DEFS = [
     shortName: "Sepolia",
     cctpDomain: 0,
     usdcAddress: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-    gasRelayerAddress: "0x5E87F210043D8457caCAd0F0c9aB70a99497Eec9",
+    gasRelayerAddress: "0x5eA2A91629245074D01EFf64fc223233c2a805E6", // v2-hardened
     explorerUrl: "https://sepolia.etherscan.io",
     rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
   },
@@ -32,7 +32,7 @@ const CHAIN_DEFS = [
     shortName: "Base",
     cctpDomain: 6,
     usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-    gasRelayerAddress: "0x64D160b7E91e78e52dFc0e8829640E32A919164C",
+    gasRelayerAddress: "0x5bE70628f49aFb90D81d169bff1533F437B967BB", // v2-hardened
     explorerUrl: "https://sepolia.basescan.org",
     rpcUrl: "https://sepolia.base.org",
   },
@@ -42,7 +42,7 @@ const CHAIN_DEFS = [
     shortName: "Fuji",
     cctpDomain: 1,
     usdcAddress: "0x5425890298aed601595a70AB815c96711a31Bc65",
-    gasRelayerAddress: "0x6F80056564491425273A6a481EcC5DAea9D57f23",
+    gasRelayerAddress: "0x53183000a7Ae24AE9F1126271a66Eff1161a58Ec", // v2-hardened
     explorerUrl: "https://testnet.snowtrace.io",
     rpcUrl: "https://api.avax-test.network/ext/bc/C/rpc",
   },

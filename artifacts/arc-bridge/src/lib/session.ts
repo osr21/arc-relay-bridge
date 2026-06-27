@@ -48,6 +48,11 @@ export function loadSession(): BridgeSession | null {
       (session.messageBytes !== undefined && (
         typeof session.messageBytes !== "string" ||
         !/^0x([0-9a-fA-F]{2}){1,1024}$/.test(session.messageBytes)
+      )) ||
+      // feeTxHash, if present, must be a valid 0x-prefixed 32-byte tx hash
+      (session.feeTxHash !== undefined && (
+        typeof session.feeTxHash !== "string" ||
+        !/^0x[0-9a-fA-F]{64}$/.test(session.feeTxHash)
       ))
     ) {
       clearSession();

@@ -44,7 +44,12 @@ export function loadBridgeHistory(): BridgeHistoryEntry[] {
         typeof (e as BridgeHistoryEntry).fromChainId === "number" &&
         typeof (e as BridgeHistoryEntry).toChainId === "number" &&
         typeof (e as BridgeHistoryEntry).amount === "string" &&
+        // burnTxHash must be a valid 0x-prefixed 32-byte tx hash
         typeof (e as BridgeHistoryEntry).burnTxHash === "string" &&
+        /^0x[0-9a-fA-F]{64}$/.test((e as BridgeHistoryEntry).burnTxHash) &&
+        // mintTxHash, if present, must also be a valid tx hash
+        ((e as BridgeHistoryEntry).mintTxHash === undefined ||
+          /^0x[0-9a-fA-F]{64}$/.test((e as BridgeHistoryEntry).mintTxHash!)) &&
         typeof (e as BridgeHistoryEntry).completedAt === "number"
     );
   } catch {
