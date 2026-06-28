@@ -50,8 +50,9 @@ export default function BridgePage() {
   const [saWalletBalance, setSaWalletBalance]       = useState<string>("—");
   const [saAddress, setSaAddress]                   = useState<string | null>(null);
   const [saAddressCopied, setSaAddressCopied]       = useState(false);
-  const [saPaymasterBalance, setSaPaymasterBalance] = useState<bigint | null>(null);
-  const [saPaymasterPaused, setSaPaymasterPaused]   = useState(false);
+  const [saPaymasterBalance, setSaPaymasterBalance]       = useState<bigint | null>(null);
+  const [saPaymasterPaused, setSaPaymasterPaused]         = useState(false);
+  const [saEntryPointDeposit, setSaEntryPointDeposit]     = useState<bigint | null>(null);
   const [oraclePrice, setOraclePrice]     = useState<string | null>(null);
 
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({
@@ -117,20 +118,23 @@ export default function BridgePage() {
     if (!useGasless || !isAASupported(fromChain.id) || !saAddress) {
       setSaPaymasterBalance(null);
       setSaPaymasterPaused(false);
+      setSaEntryPointDeposit(null);
       return;
     }
     let cancelled = false;
     fetchSmartAccountPaymasterBalance(fromChain, saAddress)
-      .then(({ available, paused }) => {
+      .then(({ available, paused, entryPointDeposit }) => {
         if (!cancelled) {
           setSaPaymasterBalance(available);
           setSaPaymasterPaused(paused);
+          setSaEntryPointDeposit(entryPointDeposit);
         }
       })
       .catch(() => {
         if (!cancelled) {
           setSaPaymasterBalance(null);
           setSaPaymasterPaused(false);
+          setSaEntryPointDeposit(null);
         }
       });
     return () => { cancelled = true; };
@@ -460,6 +464,14 @@ export default function BridgePage() {
   // Block gasless bridging when the Paymaster is paused — validatePaymasterUserOp will
   // revert on-chain regardless of balance, so submitting is always wasted effort.
   const saPaymasterIsPaused = gaslessActive && saPaymasterPaused;
+  // Block gasless bridging when the Paymaster's ETH gas reserve in the EntryPoint is too
+  // low — Pimlico rejects the UserOp before even calling validatePaymasterUserOp.
+  // Threshold: 0.001 ETH (1e15 wei). null = still loading (don't block).
+  const MIN_ENTRY_POINT_DEPOSIT = 1_000_000_000_000_000n; // 0.001 ETH in wei
+  const saEntryPointDepositLow =
+    gaslessActive &&
+    saEntryPointDeposit !== null &&
+    saEntryPointDeposit < MIN_ENTRY_POINT_DEPOSIT;
 
   const canBridge =
     !!walletAddress &&
@@ -472,7 +484,8 @@ export default function BridgePage() {
     !customRecipientInvalid &&
     !customRecipientMissing &&
     !saNoPaymasterDeposit &&
-    !saPaymasterIsPaused;
+    !saPaymasterIsPaused &&
+    !saEntryPointDepositLow;
 
   function applyMaxBalance() {
     if (effectiveBalance !== "—" && effectiveBalance !== "0.000000") setAmount(effectiveBalance);
@@ -865,6 +878,32 @@ export default function BridgePage() {
                       </span>
                     </div>
 
+                    {/* EntryPoint ETH gas reserve row */}
+                    <div className={cn(
+                      "flex items-center justify-between text-[10px] px-2.5 py-1.5 rounded-lg border",
+                      saEntryPointDepositLow
+                        ? "bg-red-950/40 border-red-500/20"
+                        : "bg-violet-950/40 border-violet-500/10"
+                    )}>
+                      <span className={saEntryPointDepositLow ? "text-red-400/80" : "text-violet-400/50"}>
+                        Paymaster ETH reserve
+                      </span>
+                      <span className={cn(
+                        "font-mono font-semibold",
+                        saEntryPointDeposit === null
+                          ? "text-slate-500"
+                          : saEntryPointDepositLow
+                            ? "text-red-300"
+                            : "text-violet-300/70"
+                      )}>
+                        {saEntryPointDeposit === null
+                          ? "loading…"
+                          : saEntryPointDeposit === 0n
+                            ? "0 ETH · EMPTY"
+                            : `${(Number(saEntryPointDeposit) / 1e18).toFixed(5)} ETH`}
+                      </span>
+                    </div>
+
                     {/* Warning when Paymaster is paused — shown above zero-balance warning */}
                     {saPaymasterIsPaused && (
                       <p className="text-red-300/80 text-[10px]">
@@ -873,8 +912,17 @@ export default function BridgePage() {
                       </p>
                     )}
 
+                    {/* Warning when Paymaster ETH reserve in EntryPoint is too low */}
+                    {!saPaymasterIsPaused && saEntryPointDepositLow && (
+                      <p className="text-red-300/80 text-[10px]">
+                        The Paymaster's ETH gas reserve is too low — the bundler will reject UserOps.
+                        The Paymaster operator needs to call <span className="font-mono">EntryPoint.depositTo(paymaster)</span> with ETH.
+                        Use the standard bridge (requires ETH/AVAX for gas) or try again later.
+                      </p>
+                    )}
+
                     {/* Warning when Paymaster deposit is zero */}
-                    {!saPaymasterIsPaused && saNoPaymasterDeposit && (
+                    {!saPaymasterIsPaused && !saEntryPointDepositLow && saNoPaymasterDeposit && (
                       <p className="text-amber-300/80 text-[10px]">
                         No gas funds deposited — the Paymaster will reject your UserOp.{" "}
                         <a href="/paymaster" className="underline text-amber-300 hover:text-amber-200 font-medium">
@@ -1121,11 +1169,12 @@ export default function BridgePage() {
                           ? "bg-[#4F9CF9] hover:bg-[#3B8AE8] text-white shadow-lg shadow-[#4F9CF9]/20"
                           : "bg-slate-700 text-slate-500 cursor-not-allowed"
                       )}>
-                      {sameChain             ? "Select different chains"        :
-                       !amountIsValid         ? "Enter an amount"                :
-                       saPaymasterIsPaused    ? "Paymaster paused"               :
-                       saNoPaymasterDeposit   ? "Deposit gas funds first"        :
-                                               "Bridge USDC"}
+                      {sameChain                ? "Select different chains"        :
+                       !amountIsValid            ? "Enter an amount"                :
+                       saPaymasterIsPaused       ? "Paymaster paused"               :
+                       saEntryPointDepositLow    ? "Gas reserve too low"            :
+                       saNoPaymasterDeposit      ? "Deposit gas funds first"        :
+                                                  "Bridge USDC"}
                     </button>
                   )}
                 </>

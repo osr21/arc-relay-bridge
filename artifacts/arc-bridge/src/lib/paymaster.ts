@@ -103,19 +103,29 @@ export async function fetchAllBalances(userAddress: string): Promise<PaymasterBa
   );
 }
 
+/** ERC-4337 v0.7 EntryPoint — same address on all EVM chains. */
+const ENTRY_POINT_ADDRESS = "0x0000000071727De22E5E9d8BAf0edAc6f37da032";
+const ENTRY_POINT_ABI = [
+  "function balanceOf(address account) view returns (uint256)",
+];
+
 export interface SmartAccountPaymasterBalance {
   balance: bigint;
   locked: bigint;
   available: bigint;
   paused: boolean;
   gasRate: bigint;
+  /** Paymaster's native-token deposit in the EntryPoint (wei). Must be > 0 for UserOps to be accepted by the bundler. */
+  entryPointDeposit: bigint;
 }
 
 /**
  * Fetch a smart account's Paymaster balance on one chain.
- * Returns { balance, locked, available, paused, gasRate }.
+ * Returns { balance, locked, available, paused, gasRate, entryPointDeposit }.
  * `available = balance - locked` mirrors exactly what validatePaymasterUserOp checks.
  * `paused = true` means validatePaymasterUserOp will revert regardless of balance.
+ * `entryPointDeposit` is the Paymaster's native-token reserve in the EntryPoint —
+ *  if this is too low, the bundler will reject the UserOp before even calling the Paymaster.
  */
 export async function fetchSmartAccountPaymasterBalance(
   chain: ChainConfig,
@@ -123,20 +133,22 @@ export async function fetchSmartAccountPaymasterBalance(
 ): Promise<SmartAccountPaymasterBalance> {
   const addr = PAYMASTER_ADDRESSES[chain.id];
   if (!isPaymasterDeployed(chain.id)) {
-    return { balance: 0n, locked: 0n, available: 0n, paused: false, gasRate: 0n };
+    return { balance: 0n, locked: 0n, available: 0n, paused: false, gasRate: 0n, entryPointDeposit: 0n };
   }
   const rpcUrl  = chain.rpcUrl ?? getChainRpc(chain.id);
   const provider = new ethers.JsonRpcProvider(rpcUrl);
   const contract = new ethers.Contract(addr, PAYMASTER_ABI, provider);
+  const entryPointContract = new ethers.Contract(ENTRY_POINT_ADDRESS, ENTRY_POINT_ABI, provider);
 
-  const [balance, locked, paused, gasRate] = await Promise.all([
+  const [balance, locked, paused, gasRate, entryPointDeposit] = await Promise.all([
     contract.balances(smartAccountAddr) as Promise<bigint>,
     contract.locked(smartAccountAddr)   as Promise<bigint>,
     contract.paused()                   as Promise<boolean>,
     contract.gasRate()                  as Promise<bigint>,
+    entryPointContract.balanceOf(addr)  as Promise<bigint>,
   ]);
   const available = balance > locked ? balance - locked : 0n;
-  return { balance, locked, available, paused, gasRate };
+  return { balance, locked, available, paused, gasRate, entryPointDeposit };
 }
 
 /** Fetch the user's wallet USDC balance on a specific chain. */

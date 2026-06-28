@@ -154,26 +154,40 @@ export function friendlyError(err: unknown): string {
     (msg.includes("paymaster") && msg.includes("revert")) ||
     msg.includes("Insufficient Paymaster balance") ||
     msg.includes("Paymaster is paused") ||
-    msg.includes("Paymaster: paused")
+    msg.includes("Paymaster: paused") ||
+    // Pimlico bundler: insufficient Paymaster ETH deposit in the EntryPoint
+    msg.includes("deposit for the User Operation is too low") ||
+    msg.includes("Paymaster deposit")
   ) {
     // Pre-flight check provides a structured message with exact amounts — pass it through.
     if (
       msg.includes("Gasless Bridge Setup") ||
       msg.includes("top up your balance") ||
-      msg.includes("is currently paused")
+      msg.includes("is currently paused") ||
+      msg.includes("ETH gas reserve") ||
+      msg.includes("Gasless bridging is temporarily unavailable")
     ) {
       return msg.replace(/\n/g, " ");
     }
+    // Bundler rejected due to insufficient Paymaster ETH deposit in the EntryPoint.
+    if (
+      msg.includes("deposit for the User Operation is too low") ||
+      msg.includes("Paymaster deposit")
+    ) {
+      return (
+        "Paymaster rejected the UserOperation — the Paymaster's gas reserve (ETH in EntryPoint) " +
+        "is too low to cover this transaction. The Paymaster operator needs to replenish the " +
+        "EntryPoint deposit. Try again later or use the standard bridge."
+      );
+    }
     // Try to surface the actual on-chain revert reason from the bundler response.
-    const pausedMatch = /paused/i.test(msg);
-    if (pausedMatch) {
+    if (/paused/i.test(msg)) {
       return (
         "Paymaster rejected the UserOperation — the Paymaster is currently paused on this chain. " +
         "Contact the Paymaster operator or try again later."
       );
     }
-    const insufficientMatch = /insufficient balance|AA33/i.test(msg);
-    if (insufficientMatch) {
+    if (/insufficient balance|AA33/i.test(msg)) {
       return (
         "Paymaster rejected the UserOperation — insufficient gas balance. " +
         "Go to the Paymaster page → Gasless Bridge Setup and deposit more USDC."

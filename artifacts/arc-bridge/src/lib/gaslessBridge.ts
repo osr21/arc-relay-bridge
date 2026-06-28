@@ -56,6 +56,12 @@ const USDC_READ_ABI = parseAbi([
   "function balanceOf(address) view returns (uint256)",
 ]);
 
+/** ERC-4337 v0.7 EntryPoint — same address on all EVM chains. */
+const ENTRY_POINT_ADDRESS = "0x0000000071727De22E5E9d8BAf0edAc6f37da032" as Address;
+const ENTRY_POINT_ABI = parseAbi([
+  "function balanceOf(address account) view returns (uint256)",
+]);
+
 /** Hard cap the Paymaster enforces per UserOp (6 dec USDC). */
 const PAYMASTER_MAX_DEDUCTION = 10_000_000n; // 10 USDC
 
@@ -205,7 +211,7 @@ export async function executeBridgeGasless(
   }
 
   // ── Check Paymaster balance (gas) ─────────────────────────────────────────
-  const [paymasterBalance, lockedAmount, gasRate, paymasterPaused] = await Promise.all([
+  const [paymasterBalance, lockedAmount, gasRate, paymasterPaused, entryPointDeposit] = await Promise.all([
     preflight.readContract({
       address: paymasterAddr as Address,
       abi: PAYMASTER_BALANCES_ABI,
@@ -228,6 +234,12 @@ export async function executeBridgeGasless(
       abi: PAYMASTER_BALANCES_ABI,
       functionName: "paused",
     }),
+    preflight.readContract({
+      address: ENTRY_POINT_ADDRESS,
+      abi: ENTRY_POINT_ABI,
+      functionName: "balanceOf",
+      args: [paymasterAddr as Address],
+    }),
   ]);
 
   // Fail fast if the Paymaster is paused — validatePaymasterUserOp will revert
@@ -237,6 +249,26 @@ export async function executeBridgeGasless(
       `The Paymaster is currently paused on ${fromChain.name}.\n` +
       `Gasless bridging is temporarily unavailable. Try again later or use the standard bridge (ETH/AVAX for gas).`
     );
+  }
+
+  // Fail fast if the Paymaster's ETH gas reserve in the EntryPoint is too low.
+  // The bundler (Pimlico) checks this BEFORE calling validatePaymasterUserOp — if the
+  // deposit cannot cover the UserOp gas cost, the bundler rejects immediately.
+  // Estimate: ESTIMATED_USEROP_GAS × current gas price × 2 (2× safety buffer).
+  {
+    const feeData = await preflight.estimateFeesPerGas().catch(() => null);
+    const gasPrice = feeData?.maxFeePerGas ?? feeData?.gasPrice ?? 0n;
+    const minRequired = gasPrice > 0n ? ESTIMATED_USEROP_GAS * gasPrice * 2n : 1_000_000_000_000_000n; // fallback 0.001 ETH
+    if (entryPointDeposit < minRequired) {
+      const haveEth = (Number(entryPointDeposit) / 1e18).toFixed(6);
+      const needEth = (Number(minRequired) / 1e18).toFixed(6);
+      throw new Error(
+        `The Paymaster's ETH gas reserve on ${fromChain.name} is too low ` +
+        `(${haveEth} ETH deposited, ~${needEth} ETH needed).\n` +
+        `The Paymaster operator needs to call EntryPoint.depositTo(paymaster) with more ETH.\n` +
+        `Gasless bridging is temporarily unavailable. Try the standard bridge (requires ETH/AVAX for gas).`
+      );
+    }
   }
 
   const available = paymasterBalance > lockedAmount ? paymasterBalance - lockedAmount : 0n;
