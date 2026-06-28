@@ -48,6 +48,7 @@ const PAYMASTER_BALANCES_ABI = parseAbi([
   "function balances(address user) view returns (uint256)",
   "function locked(address user) view returns (uint256)",
   "function gasRate() view returns (uint256)",
+  "function paused() view returns (bool)",
   "function MAX_DEDUCTION_PER_TX() view returns (uint256)",
 ]);
 
@@ -204,7 +205,7 @@ export async function executeBridgeGasless(
   }
 
   // ── Check Paymaster balance (gas) ─────────────────────────────────────────
-  const [paymasterBalance, lockedAmount, gasRate] = await Promise.all([
+  const [paymasterBalance, lockedAmount, gasRate, paymasterPaused] = await Promise.all([
     preflight.readContract({
       address: paymasterAddr as Address,
       abi: PAYMASTER_BALANCES_ABI,
@@ -222,7 +223,21 @@ export async function executeBridgeGasless(
       abi: PAYMASTER_BALANCES_ABI,
       functionName: "gasRate",
     }),
+    preflight.readContract({
+      address: paymasterAddr as Address,
+      abi: PAYMASTER_BALANCES_ABI,
+      functionName: "paused",
+    }),
   ]);
+
+  // Fail fast if the Paymaster is paused — validatePaymasterUserOp will revert
+  // on-chain and waste the user's time regardless of their balance.
+  if (paymasterPaused) {
+    throw new Error(
+      `The Paymaster is currently paused on ${fromChain.name}.\n` +
+      `Gasless bridging is temporarily unavailable. Try again later or use the standard bridge (ETH/AVAX for gas).`
+    );
+  }
 
   const available = paymasterBalance > lockedAmount ? paymasterBalance - lockedAmount : 0n;
 

@@ -152,17 +152,36 @@ export function friendlyError(err: unknown): string {
   if (
     msg.includes("validatePaymasterUserOp") ||
     (msg.includes("paymaster") && msg.includes("revert")) ||
-    msg.includes("Insufficient Paymaster balance")
+    msg.includes("Insufficient Paymaster balance") ||
+    msg.includes("Paymaster is paused") ||
+    msg.includes("Paymaster: paused")
   ) {
     // Pre-flight check provides a structured message with exact amounts — pass it through.
-    if (msg.includes("Gasless Bridge Setup") || msg.includes("top up your balance")) {
-      // Join all lines into one readable sentence for the UI.
+    if (
+      msg.includes("Gasless Bridge Setup") ||
+      msg.includes("top up your balance") ||
+      msg.includes("is currently paused")
+    ) {
       return msg.replace(/\n/g, " ");
     }
-    return (
-      "Paymaster rejected the UserOperation — your smart account likely has no USDC " +
-      "deposited in the Paymaster. Go to the Paymaster page → Gasless Bridge Setup and deposit USDC first."
-    );
+    // Try to surface the actual on-chain revert reason from the bundler response.
+    const pausedMatch = /paused/i.test(msg);
+    if (pausedMatch) {
+      return (
+        "Paymaster rejected the UserOperation — the Paymaster is currently paused on this chain. " +
+        "Contact the Paymaster operator or try again later."
+      );
+    }
+    const insufficientMatch = /insufficient balance|AA33/i.test(msg);
+    if (insufficientMatch) {
+      return (
+        "Paymaster rejected the UserOperation — insufficient gas balance. " +
+        "Go to the Paymaster page → Gasless Bridge Setup and deposit more USDC."
+      );
+    }
+    // Generic fallback: include raw bundler reason for diagnosability.
+    const rawReason = msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
+    return `Paymaster rejected the UserOperation — ${rawReason}`;
   }
 
   // On-chain execution reverted (ethers v6 throws from wait() with CALL_EXCEPTION)

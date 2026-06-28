@@ -107,12 +107,15 @@ export interface SmartAccountPaymasterBalance {
   balance: bigint;
   locked: bigint;
   available: bigint;
+  paused: boolean;
+  gasRate: bigint;
 }
 
 /**
  * Fetch a smart account's Paymaster balance on one chain.
- * Returns { balance, locked, available } where available = balance - locked.
- * This mirrors exactly what validatePaymasterUserOp checks.
+ * Returns { balance, locked, available, paused, gasRate }.
+ * `available = balance - locked` mirrors exactly what validatePaymasterUserOp checks.
+ * `paused = true` means validatePaymasterUserOp will revert regardless of balance.
  */
 export async function fetchSmartAccountPaymasterBalance(
   chain: ChainConfig,
@@ -120,18 +123,20 @@ export async function fetchSmartAccountPaymasterBalance(
 ): Promise<SmartAccountPaymasterBalance> {
   const addr = PAYMASTER_ADDRESSES[chain.id];
   if (!isPaymasterDeployed(chain.id)) {
-    return { balance: 0n, locked: 0n, available: 0n };
+    return { balance: 0n, locked: 0n, available: 0n, paused: false, gasRate: 0n };
   }
   const rpcUrl  = chain.rpcUrl ?? getChainRpc(chain.id);
   const provider = new ethers.JsonRpcProvider(rpcUrl);
   const contract = new ethers.Contract(addr, PAYMASTER_ABI, provider);
 
-  const [balance, locked] = await Promise.all([
+  const [balance, locked, paused, gasRate] = await Promise.all([
     contract.balances(smartAccountAddr) as Promise<bigint>,
     contract.locked(smartAccountAddr)   as Promise<bigint>,
+    contract.paused()                   as Promise<boolean>,
+    contract.gasRate()                  as Promise<bigint>,
   ]);
   const available = balance > locked ? balance - locked : 0n;
-  return { balance, locked, available };
+  return { balance, locked, available, paused, gasRate };
 }
 
 /** Fetch the user's wallet USDC balance on a specific chain. */

@@ -51,6 +51,7 @@ export default function BridgePage() {
   const [saAddress, setSaAddress]                   = useState<string | null>(null);
   const [saAddressCopied, setSaAddressCopied]       = useState(false);
   const [saPaymasterBalance, setSaPaymasterBalance] = useState<bigint | null>(null);
+  const [saPaymasterPaused, setSaPaymasterPaused]   = useState(false);
   const [oraclePrice, setOraclePrice]     = useState<string | null>(null);
 
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({
@@ -115,12 +116,23 @@ export default function BridgePage() {
   useEffect(() => {
     if (!useGasless || !isAASupported(fromChain.id) || !saAddress) {
       setSaPaymasterBalance(null);
+      setSaPaymasterPaused(false);
       return;
     }
     let cancelled = false;
     fetchSmartAccountPaymasterBalance(fromChain, saAddress)
-      .then(({ available }) => { if (!cancelled) setSaPaymasterBalance(available); })
-      .catch(() => { if (!cancelled) setSaPaymasterBalance(null); });
+      .then(({ available, paused }) => {
+        if (!cancelled) {
+          setSaPaymasterBalance(available);
+          setSaPaymasterPaused(paused);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSaPaymasterBalance(null);
+          setSaPaymasterPaused(false);
+        }
+      });
     return () => { cancelled = true; };
   }, [useGasless, fromChain, saAddress]);
 
@@ -445,6 +457,9 @@ export default function BridgePage() {
   // will reject the UserOp at simulation time, wasting the user's time.
   // null means still loading (don't block), 0n means confirmed empty (block).
   const saNoPaymasterDeposit = gaslessActive && saPaymasterBalance === 0n;
+  // Block gasless bridging when the Paymaster is paused — validatePaymasterUserOp will
+  // revert on-chain regardless of balance, so submitting is always wasted effort.
+  const saPaymasterIsPaused = gaslessActive && saPaymasterPaused;
 
   const canBridge =
     !!walletAddress &&
@@ -456,7 +471,8 @@ export default function BridgePage() {
     !belowRelayMin &&
     !customRecipientInvalid &&
     !customRecipientMissing &&
-    !saNoPaymasterDeposit;
+    !saNoPaymasterDeposit &&
+    !saPaymasterIsPaused;
 
   function applyMaxBalance() {
     if (effectiveBalance !== "—" && effectiveBalance !== "0.000000") setAmount(effectiveBalance);
@@ -802,13 +818,18 @@ export default function BridgePage() {
               {useGasless && isAASupported(fromChain.id) && (
                 <div className={cn(
                   "flex items-start gap-2 px-4 py-3 rounded-xl border",
-                  saNoPaymasterDeposit
-                    ? "bg-amber-950/20 border-amber-500/30"
-                    : "bg-violet-950/20 border-violet-500/20"
+                  saPaymasterIsPaused
+                    ? "bg-red-950/20 border-red-500/30"
+                    : saNoPaymasterDeposit
+                      ? "bg-amber-950/20 border-amber-500/30"
+                      : "bg-violet-950/20 border-violet-500/20"
                 )}>
-                  <Info className={cn("w-3.5 h-3.5 mt-0.5 flex-shrink-0", saNoPaymasterDeposit ? "text-amber-400" : "text-violet-400")} />
+                  <Info className={cn(
+                    "w-3.5 h-3.5 mt-0.5 flex-shrink-0",
+                    saPaymasterIsPaused ? "text-red-400" : saNoPaymasterDeposit ? "text-amber-400" : "text-violet-400"
+                  )} />
                   <div className="text-[11px] leading-relaxed space-y-1.5 w-full">
-                    <p className={saNoPaymasterDeposit ? "text-amber-300/90" : "text-violet-300/80"}>
+                    <p className={saPaymasterIsPaused ? "text-red-300/90" : saNoPaymasterDeposit ? "text-amber-300/90" : "text-violet-300/80"}>
                       USDC is burned from your{" "}
                       <span className="font-semibold">smart account wallet</span>{" "}
                       ({saWalletBalance === "—" ? "loading…" : `${saWalletBalance} USDC available`}).
@@ -818,29 +839,42 @@ export default function BridgePage() {
                     {/* Paymaster gas balance row */}
                     <div className={cn(
                       "flex items-center justify-between text-[10px] px-2.5 py-1.5 rounded-lg border",
-                      saNoPaymasterDeposit
-                        ? "bg-amber-950/40 border-amber-500/20"
-                        : "bg-violet-950/40 border-violet-500/20"
+                      saPaymasterIsPaused
+                        ? "bg-red-950/40 border-red-500/20"
+                        : saNoPaymasterDeposit
+                          ? "bg-amber-950/40 border-amber-500/20"
+                          : "bg-violet-950/40 border-violet-500/20"
                     )}>
-                      <span className={saNoPaymasterDeposit ? "text-amber-400/80" : "text-violet-400/70"}>
+                      <span className={saPaymasterIsPaused ? "text-red-400/80" : saNoPaymasterDeposit ? "text-amber-400/80" : "text-violet-400/70"}>
                         Paymaster gas balance
                       </span>
                       <span className={cn(
                         "font-mono font-semibold",
                         saPaymasterBalance === null
                           ? "text-slate-500"
-                          : saNoPaymasterDeposit
-                            ? "text-amber-400"
-                            : "text-violet-200"
+                          : saPaymasterIsPaused
+                            ? "text-red-300"
+                            : saNoPaymasterDeposit
+                              ? "text-amber-400"
+                              : "text-violet-200"
                       )}>
                         {saPaymasterBalance === null
                           ? "loading…"
                           : `${(Number(saPaymasterBalance) / 1e6).toFixed(2)} USDC`}
+                        {saPaymasterIsPaused && " · PAUSED"}
                       </span>
                     </div>
 
+                    {/* Warning when Paymaster is paused — shown above zero-balance warning */}
+                    {saPaymasterIsPaused && (
+                      <p className="text-red-300/80 text-[10px]">
+                        The Paymaster is currently paused — gasless bridging is temporarily unavailable on this chain.
+                        Use the standard bridge mode (requires ETH/AVAX for gas) or try again later.
+                      </p>
+                    )}
+
                     {/* Warning when Paymaster deposit is zero */}
-                    {saNoPaymasterDeposit && (
+                    {!saPaymasterIsPaused && saNoPaymasterDeposit && (
                       <p className="text-amber-300/80 text-[10px]">
                         No gas funds deposited — the Paymaster will reject your UserOp.{" "}
                         <a href="/paymaster" className="underline text-amber-300 hover:text-amber-200 font-medium">
@@ -953,7 +987,7 @@ export default function BridgePage() {
                   <StepProgress
                     step={bridgeStatus.step}
                     failedAtStep={bridgeStatus.failedAtStep}
-                    hasFee={feeEnabled}
+                    hasFee={feeEnabled && !gaslessActive}
                     stepLabels={useGasRelay && toChain.gasRelayerAddress ? { minting: "Relay" } : undefined}
                   />
 
@@ -1089,6 +1123,7 @@ export default function BridgePage() {
                       )}>
                       {sameChain             ? "Select different chains"        :
                        !amountIsValid         ? "Enter an amount"                :
+                       saPaymasterIsPaused    ? "Paymaster paused"               :
                        saNoPaymasterDeposit   ? "Deposit gas funds first"        :
                                                "Bridge USDC"}
                     </button>
