@@ -594,9 +594,12 @@ async function pollAttestation(
   }
 
   throw new Error(
-    `Attestation timed out after 20 minutes. Your funds are safe — the burn is confirmed on-chain.\n` +
+    `Attestation timed out after 20 minutes.\n` +
+    `Your USDC has been burned on the source chain and is safe — do NOT initiate another burn or you risk a second burn going unattested.\n` +
     `Burn tx: ${burnTxHash}\n` +
-    `You can resume the mint from the bridge UI or manually at https://developers.circle.com/stablecoins/cctp-getting-started`
+    `This is a known intermittent issue with Circle's IRIS attestation service for Arc (domain 26). ` +
+    `Check https://status.circle.com for incidents, then use "Resume" in the bridge UI once attestations recover. ` +
+    `If still stuck after 24 hours, contact Circle support with your burn tx hash above.`
   );
 }
 
