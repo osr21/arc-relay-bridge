@@ -160,15 +160,15 @@ router.post("/relay", async (req, res) => {
     res.status(400).json({ error: "Invalid message — must be 0x-prefixed even-length hex, 284–2500 chars" });
     return;
   }
-  // Circle Iris attestations are 65 bytes (secp256k1) = 132 hex chars + 0x prefix = 134 chars minimum.
-  // Allow 8× headroom (270 chars) for multi-sig threshold attestations.
-  // Enforce even hex length.
+  // Circle Iris attestations are 65 bytes (secp256k1) = 130 hex chars + "0x" prefix = 132 chars per signer.
+  // CCTP V2 supports threshold (multi-sig) attestations: N × 65 bytes concatenated.
+  // Cap at 16 signers: 2 + 16 × 130 = 2082 chars.  Enforce even hex length.
   if (
     !attestation || typeof attestation !== "string" ||
     !/^0x([0-9a-fA-F]{2})+$/.test(attestation) ||
-    attestation.length < 134 || attestation.length > 270
+    attestation.length < 132 || attestation.length > 2082
   ) {
-    res.status(400).json({ error: "Invalid attestation — must be 0x-prefixed even-length hex, 134–270 chars" });
+    res.status(400).json({ error: "Invalid attestation — must be 0x-prefixed even-length hex, 132–2082 chars" });
     return;
   }
   if (!recipient || !ethers.isAddress(recipient)) {

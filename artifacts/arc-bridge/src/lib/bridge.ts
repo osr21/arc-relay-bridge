@@ -611,6 +611,27 @@ async function pollAttestation(
  * "replacement transaction underpriced". See arc-node#87.
  * Returns undefined if the provider can't supply fee data (non-blocking).
  */
+/**
+ * Fetch a transaction receipt, trying each chain RPC URL in order until one succeeds.
+ * Returns null if the receipt is genuinely not yet available (tx pending on all RPCs),
+ * or if all RPCs are unresponsive (treats as pending to allow retry).
+ */
+async function getReceiptAnyRpc(
+  txHash: string,
+  chain: ChainConfig
+): Promise<ethers.TransactionReceipt | null> {
+  for (const url of [chain.rpcUrl, ...chain.rpcFallbacks]) {
+    try {
+      const p = new ethers.JsonRpcProvider(url);
+      const receipt = await p.getTransactionReceipt(txHash);
+      if (receipt !== null) return receipt;
+    } catch {
+      // RPC unresponsive or rate-limited — try next fallback
+    }
+  }
+  return null;
+}
+
 async function getBumpedGasPrice(signer: ethers.Signer): Promise<bigint | undefined> {
   try {
     const feeData = await signer.provider!.getFeeData();
@@ -925,11 +946,11 @@ export async function executeBridge(
       mintTxHash: relayTxHash,
     });
 
-    // Poll for the relay tx receipt on the destination chain
-    const destProvider = new ethers.JsonRpcProvider(toChain.rpcUrl);
+    // Poll for the relay tx receipt on the destination chain, using fallback RPCs so a
+    // single unresponsive node doesn't falsely report the relay as unconfirmed.
     let relayReceipt: ethers.TransactionReceipt | null = null;
     for (let i = 0; i < 60; i++) {
-      relayReceipt = await destProvider.getTransactionReceipt(relayTxHash);
+      relayReceipt = await getReceiptAnyRpc(relayTxHash, toChain);
       if (relayReceipt) break;
       await new Promise((r) => setTimeout(r, 5000));
     }
@@ -995,7 +1016,14 @@ export async function executeBridge(
 
     onStatusChange({ step: "minting", message: "Minting USDC on destination chain...", feeTxHash, burnTxHash });
 
-    const mintOverrides = toChain.gasLimitOverride ? { gasLimit: toChain.gasLimitOverride } : {};
+    // Arc Testnet as destination requires a bumped gas price — eth_gasPrice on Arc
+    // can be stale or elevated, causing "underpriced" failures without the 30% bump.
+    const mintOverrides: Record<string, bigint> = {};
+    if (toChain.gasLimitOverride) mintOverrides.gasLimit = toChain.gasLimitOverride;
+    if (toChain.isArc) {
+      const bumpedGasPrice = await getBumpedGasPrice(destSigner);
+      if (bumpedGasPrice !== undefined) mintOverrides.gasPrice = bumpedGasPrice;
+    }
     const mintTx = await messageTransmitter.receiveMessage(
       attestationResult.message,
       attestationResult.attestation,
@@ -1089,8 +1117,14 @@ export async function resumeBridge(
 
   onStatusChange({ step: "minting", message: "Minting USDC on destination chain...", feeTxHash, burnTxHash });
 
-  // Apply gas override on chains where eth_estimateGas is unreliable (e.g. Arc Testnet as destination).
-  const mintOverrides = toChain.gasLimitOverride ? { gasLimit: toChain.gasLimitOverride } : {};
+  // Arc Testnet as destination requires a bumped gas price — eth_gasPrice on Arc
+  // can be stale or elevated, causing "underpriced" failures without the 30% bump.
+  const mintOverrides: Record<string, bigint> = {};
+  if (toChain.gasLimitOverride) mintOverrides.gasLimit = toChain.gasLimitOverride;
+  if (toChain.isArc) {
+    const bumpedGasPrice = await getBumpedGasPrice(destSigner);
+    if (bumpedGasPrice !== undefined) mintOverrides.gasPrice = bumpedGasPrice;
+  }
   const mintTx = await messageTransmitter.receiveMessage(
     attestationResult.message,
     attestationResult.attestation,
@@ -1174,10 +1208,11 @@ export async function resumeBridgeGasRelay(
     mintTxHash: relayTxHash,
   });
 
-  const destProvider = new ethers.JsonRpcProvider(toChain.rpcUrl);
+  // Poll for the relay tx receipt, using fallback RPCs so a single unresponsive
+  // node doesn't falsely report the relay as unconfirmed.
   let relayReceipt: ethers.TransactionReceipt | null = null;
   for (let i = 0; i < 60; i++) {
-    relayReceipt = await destProvider.getTransactionReceipt(relayTxHash);
+    relayReceipt = await getReceiptAnyRpc(relayTxHash, toChain);
     if (relayReceipt) break;
     await new Promise((r) => setTimeout(r, 5000));
   }

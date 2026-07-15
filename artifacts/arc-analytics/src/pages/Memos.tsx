@@ -131,7 +131,9 @@ export default function Memos() {
           
           <div className="flex items-center justify-between mt-4">
             <div className="text-sm text-muted-foreground">
-              Showing {(page - 1) * limit + 1} to {Math.min(page * limit, total)} of {total}
+              {total > 0
+                ? <>Showing {(page - 1) * limit + 1}–{Math.min(page * limit, total)} of {total.toLocaleString()}</>
+                : null}
             </div>
             <div className="flex items-center gap-2">
               <Button 
