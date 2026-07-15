@@ -5,3 +5,4 @@
 - [drizzle-kit BigInt default serialization](drizzle-bigint-default.md) — drizzle-kit@0.31.10 crashes with `Cannot serialize BigInt` when schema has `.default(0n)`; fix: use `mode:"number"` + `.default(0)` for counter/progress columns.
 - [Express BigInt JSON serialization](express-bigint-json.md) — drizzle `mode:"bigint"` returns native JS BigInt; Express JSON.stringify can't handle it; fix: `app.set("json replacer", (_k, v) => typeof v === "bigint" ? v.toString() : v)`.
 - [Workspace catalog — no typescript entry](workspace-catalog-typescript.md) — pnpm-workspace.yaml catalog has no `typescript` entry; new lib packages must use explicit version `"~5.9.3"`, not `"catalog:"`.
+- [drpc.org free tier limits for Arc indexer](drpc-arc-limits.md) — three hard limits that must all be respected simultaneously; ignoring any one silently breaks the indexer.
