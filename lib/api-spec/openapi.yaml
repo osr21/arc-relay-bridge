@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: indexer
+    description: Arc event indexer — USDC transfers, memos, CCTP bridge events
 paths:
   /healthz:
     get:
@@ -24,6 +26,139 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /indexer/transfers:
+    get:
+      operationId: getTransfers
+      tags: [indexer]
+      summary: List indexed USDC transfers
+      parameters:
+        - name: from
+          in: query
+          schema: { type: string }
+        - name: to
+          in: query
+          schema: { type: string }
+        - name: type
+          in: query
+          schema: { type: string, enum: [NATIVE_SEND, MINT, BURN] }
+        - name: txHash
+          in: query
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 25, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated transfer list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferPage"
+
+  /indexer/memos:
+    get:
+      operationId: getMemos
+      tags: [indexer]
+      summary: List indexed memo events
+      parameters:
+        - name: sender
+          in: query
+          schema: { type: string }
+        - name: target
+          in: query
+          schema: { type: string }
+        - name: memoId
+          in: query
+          schema: { type: string }
+        - name: txHash
+          in: query
+          schema: { type: string }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 25, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated memo list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoPage"
+
+  /indexer/cctp/burns:
+    get:
+      operationId: getCctpBurns
+      tags: [indexer]
+      summary: List indexed CCTP burn events
+      parameters:
+        - name: depositor
+          in: query
+          schema: { type: string }
+        - name: destDomain
+          in: query
+          schema: { type: integer }
+        - name: status
+          in: query
+          schema: { type: string, enum: [PENDING, COMPLETE, STUCK] }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 25, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated CCTP burn list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CctpBurnPage"
+
+  /indexer/cctp/mints:
+    get:
+      operationId: getCctpMints
+      tags: [indexer]
+      summary: List indexed CCTP mint events
+      parameters:
+        - name: recipient
+          in: query
+          schema: { type: string }
+        - name: remoteDomain
+          in: query
+          schema: { type: integer }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 25, maximum: 100 }
+      responses:
+        "200":
+          description: Paginated CCTP mint list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CctpMintPage"
+
+  /indexer/stats:
+    get:
+      operationId: getIndexerStats
+      tags: [indexer]
+      summary: Aggregate indexer statistics and bridge analytics
+      responses:
+        "200":
+          description: Indexer stats and CCTP domain breakdown
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IndexerStats"
+
 components:
   schemas:
     HealthStatus:
@@ -34,3 +169,145 @@ components:
       required:
         - status
 
+    UsdcTransfer:
+      type: object
+      required: [id, blockNumber, txHash, fromAddress, toAddress, amountNative, amountUsdc, transferType, isNativeLog]
+      properties:
+        id:           { type: string }
+        blockNumber:  { type: string }
+        blockTime:    { type: ["string", "null"] }
+        txHash:       { type: string }
+        logIndex:     { type: string }
+        fromAddress:  { type: string }
+        toAddress:    { type: string }
+        amountNative: { type: string }
+        amountUsdc:   { type: string }
+        transferType: { type: string }
+        isNativeLog:  { type: boolean }
+
+    TransferPage:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:  { type: array, items: { $ref: "#/components/schemas/UsdcTransfer" } }
+        total: { type: integer }
+        page:  { type: integer }
+        limit: { type: integer }
+
+    MemoEvent:
+      type: object
+      required: [id, blockNumber, txHash, sender, target, memoId, memoData, memoIndex]
+      properties:
+        id:           { type: string }
+        blockNumber:  { type: string }
+        blockTime:    { type: ["string", "null"] }
+        txHash:       { type: string }
+        sender:       { type: string }
+        target:       { type: string }
+        callDataHash: { type: string }
+        memoId:       { type: string }
+        memoData:     { type: string }
+        memoText:     { type: ["string", "null"] }
+        memoIndex:    { type: string }
+
+    MemoPage:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:  { type: array, items: { $ref: "#/components/schemas/MemoEvent" } }
+        total: { type: integer }
+        page:  { type: integer }
+        limit: { type: integer }
+
+    CctpBurn:
+      type: object
+      required: [id, blockNumber, txHash, sourceDomain, destinationDomain, amount, depositor, attestationStatus]
+      properties:
+        id:                { type: string }
+        blockNumber:       { type: string }
+        blockTime:         { type: ["string", "null"] }
+        txHash:            { type: string }
+        sourceDomain:      { type: integer }
+        destinationDomain: { type: integer }
+        burnToken:         { type: string }
+        amount:            { type: string }
+        depositor:         { type: string }
+        mintRecipient:     { type: string }
+        nonce:             { type: string }
+        destinationCaller: { type: string }
+        attestationStatus: { type: string }
+        mintEventId:       { type: ["string", "null"] }
+
+    CctpBurnPage:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:  { type: array, items: { $ref: "#/components/schemas/CctpBurn" } }
+        total: { type: integer }
+        page:  { type: integer }
+        limit: { type: integer }
+
+    CctpMint:
+      type: object
+      required: [id, blockNumber, txHash, destinationDomain, remoteDomain, amount, mintRecipient]
+      properties:
+        id:                { type: string }
+        blockNumber:       { type: string }
+        blockTime:         { type: ["string", "null"] }
+        txHash:            { type: string }
+        destinationDomain: { type: integer }
+        remoteDomain:      { type: integer }
+        mintRecipient:     { type: string }
+        amount:            { type: string }
+        mintToken:         { type: string }
+        nonce:             { type: string }
+        burnEventId:       { type: ["string", "null"] }
+
+    CctpMintPage:
+      type: object
+      required: [data, total, page, limit]
+      properties:
+        data:  { type: array, items: { $ref: "#/components/schemas/CctpMint" } }
+        total: { type: integer }
+        page:  { type: integer }
+        limit: { type: integer }
+
+    DomainBreakdown:
+      type: object
+      required: [destDomain, count, domainName]
+      properties:
+        destDomain:   { type: integer }
+        count:        { type: integer }
+        totalAmount:  { type: ["string", "null"] }
+        domainName:   { type: string }
+
+    MintDomainBreakdown:
+      type: object
+      required: [remoteDomain, count, domainName]
+      properties:
+        remoteDomain: { type: integer }
+        count:        { type: integer }
+        totalAmount:  { type: ["string", "null"] }
+        domainName:   { type: string }
+
+    IndexerState:
+      type: object
+      properties:
+        id:               { type: string }
+        lastIndexedBlock: { type: integer }
+        totalTransfers:   { type: integer }
+        totalMemos:       { type: integer }
+        totalCctpBurns:   { type: integer }
+        totalCctpMints:   { type: integer }
+
+    IndexerStats:
+      type: object
+      required: [cctpBurnsByDestination, cctpMintsBySource]
+      properties:
+        indexer:               { $ref: "#/components/schemas/IndexerState" }
+        cctpBurnsByDestination:
+          type: array
+          items: { $ref: "#/components/schemas/DomainBreakdown" }
+        cctpMintsBySource:
+          type: array
+          items: { $ref: "#/components/schemas/MintDomainBreakdown" }

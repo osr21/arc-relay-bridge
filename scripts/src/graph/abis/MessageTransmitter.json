@@ -1,0 +1,24 @@
+[
+  {
+    "type": "function",
+    "name": "receiveMessage",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      { "name": "message",     "type": "bytes" },
+      { "name": "attestation", "type": "bytes" }
+    ],
+    "outputs": [{ "name": "success", "type": "bool" }]
+  },
+  {
+    "type": "event",
+    "name": "MessageReceived",
+    "anonymous": false,
+    "inputs": [
+      { "name": "caller",       "type": "address", "indexed": true  },
+      { "name": "sourceDomain", "type": "uint32",  "indexed": false },
+      { "name": "nonce",        "type": "uint64",  "indexed": true  },
+      { "name": "sender",       "type": "bytes32", "indexed": false },
+      { "name": "message",      "type": "bytes",   "indexed": false }
+    ]
+  }
+]

@@ -1,0 +1,183 @@
+# Arc Testnet — The Graph Subgraph Schema (Tool C)
+#
+# Entities for indexing:
+#   - Native USDC transfers (EIP-7708, emitter 0xffff…fffe, 18d)
+#   - ERC-20 USDC transfers (0x3600…0000, 6d) — deduplicated
+#   - Transaction memos (0x5294…e505 Memo contract)
+#   - CCTP v2 burns (TokenMessenger, domain 26)
+#   - CCTP v2 mints (MessageTransmitter)
+#   - Per-address aggregate stats
+
+# ── USDC Transfer ─────────────────────────────────────────────────────────────
+
+type UsdcTransfer @entity(immutable: true) {
+  "txHash-logIndex"
+  id: ID!
+
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  txHash: Bytes!
+  logIndex: BigInt!
+
+  from: Bytes!
+  to:   Bytes!
+
+  "Amount in 18-decimal native representation (canonical, EIP-7708 source)"
+  amountNative: BigInt!
+
+  "Amount in 6-decimal ERC-20 representation (amountNative / 1e12)"
+  amountUsdc: BigDecimal!
+
+  "NATIVE_SEND | ERC20_TRANSFER | MINT | BURN"
+  transferType: String!
+
+  "True when emitted by 0xffff…fffe (system EIP-7708 log)"
+  isNativeLog: Boolean!
+}
+
+# ── Memo Event ────────────────────────────────────────────────────────────────
+
+type MemoEvent @entity(immutable: true) {
+  "txHash-memoIndex"
+  id: ID!
+
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  txHash: Bytes!
+
+  "Original msg.sender preserved by the Memo contract"
+  sender: Bytes!
+
+  "Contract being called through the Memo wrapper"
+  target: Bytes!
+
+  "keccak256 of the inner calldata (matches the inner Transfer/call)"
+  callDataHash: Bytes!
+
+  "Application-defined memo identifier (bytes32, indexed)"
+  memoId: Bytes!
+
+  "Raw memo payload bytes"
+  memoData: Bytes!
+
+  "UTF-8 decoded memo (null if binary)"
+  memoText: String
+
+  "Sequential memo index within the transaction"
+  memoIndex: BigInt!
+}
+
+# ── CCTP Burn (depositForBurn) ────────────────────────────────────────────────
+
+type CctpBurn @entity(immutable: true) {
+  "txHash-logIndex"
+  id: ID!
+
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  txHash: Bytes!
+
+  "Source domain (26 = Arc)"
+  sourceDomain: Int!
+
+  "Destination domain"
+  destinationDomain: Int!
+
+  "USDC token address on source chain"
+  burnToken: Bytes!
+
+  "Amount burned (6 decimals)"
+  amount: BigInt!
+
+  "Address that called depositForBurn"
+  depositor: Bytes!
+
+  "Mint recipient on destination chain (bytes32)"
+  mintRecipient: Bytes!
+
+  "CCTP v2 nonce (event-level nonce)"
+  nonce: BigInt!
+
+  "Hook destination caller (bytes32, 0x0 = anyone may relay)"
+  destinationCaller: Bytes!
+
+  "Attestation status: PENDING | COMPLETE | STUCK"
+  attestationStatus: String!
+
+  "Linked mint event id (null until minted)"
+  mintEvent: CctpMint
+}
+
+# ── CCTP Mint (receiveMessage) ────────────────────────────────────────────────
+
+type CctpMint @entity(immutable: true) {
+  "txHash-logIndex"
+  id: ID!
+
+  blockNumber: BigInt!
+  blockTimestamp: BigInt!
+  txHash: Bytes!
+
+  "Destination domain (this chain)"
+  destinationDomain: Int!
+
+  "Source domain where the burn happened"
+  remoteDomain: Int!
+
+  "Recipient address on this chain"
+  mintRecipient: Bytes!
+
+  "Amount minted (6 decimals)"
+  amount: BigInt!
+
+  "USDC token address on this chain"
+  mintToken: Bytes!
+
+  "CCTP v2 nonce"
+  nonce: BigInt!
+
+  "Linked burn event id (if burn was indexed on same subgraph)"
+  burnEvent: CctpBurn
+}
+
+# ── Address Stats ─────────────────────────────────────────────────────────────
+
+type AddressStats @entity {
+  "Checksummed address"
+  id: ID!
+
+  address: Bytes!
+
+  "Total native USDC received (18 decimals)"
+  totalReceivedNative: BigInt!
+
+  "Total native USDC sent (18 decimals)"
+  totalSentNative: BigInt!
+
+  "Number of Transfer events (in + out)"
+  transferCount: BigInt!
+
+  "Number of memo events sent"
+  memoCount: BigInt!
+
+  "Number of CCTP burns"
+  cctpBurnCount: BigInt!
+
+  "Number of CCTP mints received"
+  cctpMintCount: BigInt!
+
+  lastActivityBlock: BigInt!
+}
+
+# ── Indexer Metadata ──────────────────────────────────────────────────────────
+
+type IndexerMeta @entity {
+  "singleton — id = 'meta'"
+  id: ID!
+
+  lastIndexedBlock: BigInt!
+  totalTransfers: BigInt!
+  totalMemos: BigInt!
+  totalCctpBurns: BigInt!
+  totalCctpMints: BigInt!
+}

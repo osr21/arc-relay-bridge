@@ -1,0 +1,16 @@
+{
+  "name": "@workspace/arc-subgraph",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Arc Testnet — The Graph subgraph for USDC transfers, memos, and CCTP v2",
+  "scripts": {
+    "codegen": "graph codegen",
+    "build":   "graph build",
+    "deploy:local": "graph deploy --node http://localhost:8020/ --ipfs http://localhost:5001 arc/arc-testnet",
+    "deploy:hosted": "graph deploy --product hosted-service arc/arc-testnet"
+  },
+  "dependencies": {
+    "@graphprotocol/graph-cli": "^0.81.0",
+    "@graphprotocol/graph-ts": "^0.35.1"
+  }
+}

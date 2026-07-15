@@ -8,6 +8,13 @@ import { logger } from "./lib/logger";
 
 const app: Express = express();
 
+// BigInt values from drizzle bigint columns are native JS BigInt — JSON.stringify
+// doesn't know how to handle them. This replacer converts them to strings globally
+// so every res.json() call serializes cleanly.
+app.set("json replacer", (_key: string, value: unknown) =>
+  typeof value === "bigint" ? value.toString() : value
+);
+
 // Replit's shared proxy injects X-Forwarded-For. Trust the first hop so that
 // express-rate-limit can use the real client IP rather than the proxy's address.
 app.set("trust proxy", 1);
@@ -151,6 +158,15 @@ const yieldLimiter = rateLimit({
   message: { error: "Too many yield requests — please wait a moment." },
 });
 
+// Indexer read endpoints: DB queries only, no external calls. 120/min per IP.
+const indexerLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many indexer requests — please wait a moment." },
+});
+
 app.use("/api/attest",              attestLimiter);
 app.use("/api/relay",               relayLimiter);
 app.use("/api/chains",              chainsLimiter);
@@ -160,6 +176,7 @@ app.use("/api/bundler",             bundlerLimiter);
 app.use("/api/gasrefuel/submit",    gasrefuelSubmitLimiter);
 app.use("/api/gasrefuel",           gasrefuelReadLimiter);
 app.use("/api/yield",               yieldLimiter);
+app.use("/api/indexer",             indexerLimiter);
 app.use("/api", router);
 
 export default app;

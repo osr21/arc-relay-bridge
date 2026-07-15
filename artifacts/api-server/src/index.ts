@@ -1,5 +1,6 @@
 import app from "./app";
 import { logger } from "./lib/logger";
+import { startIndexer } from "./workers/indexer";
 
 const rawPort = process.env["PORT"];
 
@@ -22,4 +23,13 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+
+  // Start the Arc event indexer only when a database is available
+  if (process.env["DATABASE_URL"]) {
+    startIndexer().catch((e) =>
+      logger.error({ err: e }, "indexer: failed to start")
+    );
+  } else {
+    logger.warn("indexer: DATABASE_URL not set — Arc event indexer will not run");
+  }
 });

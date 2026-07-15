@@ -14,6 +14,7 @@
     "deploy-paymaster": "tsx ./src/deployPaymaster.ts",
     "deploy-all": "tsx ./src/deployAll.ts",
     "fund-paymaster": "tsx ./src/fundPaymaster.ts",
+    "lint-contract": "tsx ./src/lint-arc-contract.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

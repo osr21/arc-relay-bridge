@@ -9,6 +9,7 @@ import oracleRouter     from "./oracle";
 import bundlerRouter    from "./bundler";
 import gasRefuelRouter  from "./gasrefuel";
 import contractsRouter  from "./contracts";
+import indexerRouter    from "./indexer";
 
 const router: IRouter = Router();
 
@@ -22,5 +23,6 @@ router.use(oracleRouter);
 router.use(bundlerRouter);
 router.use(gasRefuelRouter);
 router.use(contractsRouter);
+router.use(indexerRouter);
 
 export default router;
