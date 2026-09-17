@@ -2,12 +2,11 @@ import { ethers } from "ethers";
 import {
   ChainConfig,
   USDC_ABI,
-  TOKEN_MESSENGER_ABI,
   TOKEN_MESSENGER_V2_ABI,
   MESSAGE_TRANSMITTER_ABI,
-  ATTESTATION_API,
 } from "./chains";
-import { calculateFee, formatUsdc } from "./config";
+import { formatUsdc } from "./config";
+import { assertBackendEnvironment, assertFeatureAvailable } from "./network";
 
 export type BridgeStep =
   | "idle"
@@ -20,6 +19,18 @@ export type BridgeStep =
   | "error";
 
 export type ActiveStep = "approving" | "collecting" | "burning" | "attesting" | "minting";
+export const ARC_MINT_GAS_RESERVE = 20_000_000_000_000_000n;
+export const BASE_MINT_GAS_RESERVE = 100_000_000_000_000n;
+const APPROVE_GAS_LIMIT = 100_000n;
+const CCTP_WRITE_GAS_LIMIT = 600_000n;
+
+export function hasArcMintGasReserve(balance: bigint, reserve = ARC_MINT_GAS_RESERVE): boolean {
+  return balance >= reserve;
+}
+
+export function hasBaseMintGasReserve(balance: bigint, reserve = BASE_MINT_GAS_RESERVE): boolean {
+  return balance >= reserve;
+}
 
 export interface BridgeStatus {
   step: BridgeStep;
@@ -29,6 +40,8 @@ export interface BridgeStatus {
   burnTxHash?: string;
   mintTxHash?: string;
   messageBytes?: string;
+  sourceMessageHash?: string;
+  sourceLogIndex?: number;
   error?: string;
   failedAtStep?: ActiveStep;
 }
@@ -110,6 +123,13 @@ export async function switchToChain(chain: ChainConfig): Promise<void> {
       params: [{ chainId: chain.hexId }],
     });
 
+    // MetaMask race: eth_chainId can still report the old chain for ~200-500 ms after
+    // wallet_switchEthereumChain resolves. Without this delay, the verification below
+    // sees the pre-switch chainId and triggers wallet_addEthereumChain unnecessarily —
+    // showing the user a second "Add / Switch Arc Testnet" popup that they then dismiss,
+    // breaking the flow. 400 ms is enough for MetaMask to update its internal state.
+    await new Promise(r => setTimeout(r, 400));
+
     // Verify the switch actually took effect — Arc Testnet can return success without switching.
     const current = await getWalletChainId();
     if (current !== chain.id) {
@@ -141,6 +161,56 @@ export function friendlyError(err: unknown): string {
     return "Transaction cancelled — you rejected the request in your wallet.";
   }
 
+  // ERC-4337 Paymaster validation failure — pre-flight or on-chain revert
+  if (
+    msg.includes("validatePaymasterUserOp") ||
+    (msg.includes("paymaster") && msg.includes("revert")) ||
+    msg.includes("Insufficient Paymaster balance") ||
+    msg.includes("Paymaster is paused") ||
+    msg.includes("Paymaster: paused") ||
+    // Pimlico bundler: insufficient Paymaster ETH deposit in the EntryPoint
+    msg.includes("deposit for the User Operation is too low") ||
+    msg.includes("Paymaster deposit")
+  ) {
+    // Pre-flight check provides a structured message with exact amounts — pass it through.
+    if (
+      msg.includes("Gasless Bridge Setup") ||
+      msg.includes("top up your balance") ||
+      msg.includes("is currently paused") ||
+      msg.includes("ETH gas reserve") ||
+      msg.includes("Gasless bridging is temporarily unavailable")
+    ) {
+      return msg.replace(/\n/g, " ");
+    }
+    // Bundler rejected due to insufficient Paymaster ETH deposit in the EntryPoint.
+    if (
+      msg.includes("deposit for the User Operation is too low") ||
+      msg.includes("Paymaster deposit")
+    ) {
+      return (
+        "Paymaster rejected the UserOperation — the Paymaster's gas reserve (ETH in EntryPoint) " +
+        "is too low to cover this transaction. The Paymaster operator needs to replenish the " +
+        "EntryPoint deposit. Try again later or use the standard bridge."
+      );
+    }
+    // Try to surface the actual on-chain revert reason from the bundler response.
+    if (/paused/i.test(msg)) {
+      return (
+        "Paymaster rejected the UserOperation — the Paymaster is currently paused on this chain. " +
+        "Contact the Paymaster operator or try again later."
+      );
+    }
+    if (/insufficient balance|AA33/i.test(msg)) {
+      return (
+        "Paymaster rejected the UserOperation — insufficient gas balance. " +
+        "Go to the Paymaster page → Gasless Bridge Setup and deposit more USDC."
+      );
+    }
+    // Generic fallback: include raw bundler reason for diagnosability.
+    const rawReason = msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
+    return `Paymaster rejected the UserOperation — ${rawReason}`;
+  }
+
   // On-chain execution reverted (ethers v6 throws from wait() with CALL_EXCEPTION)
   if (
     code === "CALL_EXCEPTION" ||
@@ -168,6 +238,14 @@ export function friendlyError(err: unknown): string {
     return "Gas estimation failed — the transaction may be misconfigured or the RPC is unavailable. Try again.";
   }
 
+  if (
+    msg.includes("-32080") ||
+    msg.includes("HTTP client error") ||
+    msg.includes("httpStatus\": 403")
+  ) {
+    return "Your wallet RPC stopped responding. If a transaction hash is shown below, it may already be submitted; resume that transfer instead of starting another one.";
+  }
+
   // Return the first line only (ethers wraps long messages with newlines)
   return msg.split("\n")[0].slice(0, 200);
 }
@@ -180,6 +258,33 @@ async function waitForChainSwitch(expectedChainId: number, timeoutMs = 60000): P
     if (current === expectedChainId) return;
   }
   throw new Error("Chain switch timed out. Please switch networks manually and try again.");
+}
+
+/**
+ * Get a signer that is confirmed to be on the expected chain.
+ *
+ * MetaMask has a race condition where eth_chainId briefly reports the new chain
+ * before its internal RPC router has fully switched — waitForChainSwitch returning
+ * is not enough. If we acquire a signer and it reports the wrong chainId, we wait
+ * a short back-off and retry, up to maxRetries times.
+ *
+ * This prevents receiveMessage from being submitted to the old (source) chain
+ * immediately after a wallet_addEthereumChain / wallet_switchEthereumChain call.
+ */
+async function getSignerOnChain(expectedChainId: number, maxRetries = 6): Promise<ethers.JsonRpcSigner> {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 500 * attempt));
+    }
+    const provider = await getProvider();
+    const signer   = await provider.getSigner();
+    const network  = await provider.getNetwork();
+    if (Number(network.chainId) === expectedChainId) return signer;
+  }
+  throw new Error(
+    `Wallet is still on the wrong network after ${maxRetries} attempts. ` +
+    `Please switch to the destination chain manually in MetaMask and try again.`
+  );
 }
 
 /**
@@ -203,8 +308,12 @@ async function waitWithRetry(
     return (
       msg.includes("network") ||
       msg.includes("could not detect") ||
+      msg.includes("could not coalesce") ||
       msg.includes("connection") ||
-      msg.includes("timeout")
+      msg.includes("timeout") ||
+      msg.includes("-32080") ||
+      msg.includes("http client error") ||
+      msg.includes("httpstatus\": 403")
     );
   };
 
@@ -226,9 +335,22 @@ async function waitWithRetry(
       try {
         const staticProvider = new ethers.JsonRpcProvider(url);
         const receipt = await staticProvider.getTransactionReceipt(tx.hash);
-        if (receipt) return receipt;
-      } catch {
-        // try next RPC
+        if (receipt) {
+          // status 0 = reverted on-chain — surface this explicitly rather than
+          // treating a failed receipt as success (callers only check !receipt).
+          if (receipt.status !== 1) {
+            throw new Error(
+              `Transaction was reverted on-chain (status 0). ` +
+              `Check ${chain.explorerUrl}/tx/${tx.hash} for the revert reason.`
+            );
+          }
+          return receipt;
+        }
+      } catch (innerErr) {
+        // Re-throw revert errors immediately — they are definitive, not transient
+        const innerMsg = (innerErr instanceof Error ? innerErr.message : String(innerErr)).toLowerCase();
+        if (innerMsg.includes("reverted on-chain")) throw innerErr;
+        // Otherwise try next RPC
       }
     }
   }
@@ -292,16 +414,19 @@ function validateAmount(amount: string): bigint {
  *   bytes 44-75: sender            (bytes32)
  *   bytes 76-107: recipient        (bytes32)
  *   bytes 108-139: destinationCaller (bytes32)
- *   bytes 140+:  messageBody
+ *   bytes 140-143: minFinalityThreshold
+ *   bytes 144-147: finalityThresholdExecuted
+ *   bytes 148-375: BurnMessageV2 body (no hook)
  *
- * Note: Arc's CCTP V2 implementation encodes nonce as all-zero bytes32.
- * Replay protection uses keccak256(messageBytes) as the usedNonces key — NOT
- * keccak256(sourceDomain, nonce) as in CCTP V1.
+ * The fixed BurnMessageV2 body starts with a 4-byte version, followed by
+ * burnToken, mintRecipient, amount, messageSender, maxFee, feeExecuted and
+ * expirationBlock.
+ * Replay protection uses the attested message nonce as the usedNonces key.
  */
 
 /**
  * Returns true if the CCTP message has already been received on the destination.
- * Queries usedNonces(keccak256(messageBytes)) on the MessageTransmitter.
+ * Queries usedNonces(attestedMessage.nonce) on MessageTransmitterV2.
  * Safe default is false (don't assume minted if the check itself fails).
  */
 async function checkNonceUsed(
@@ -310,14 +435,13 @@ async function checkNonceUsed(
   signer: ethers.Signer
 ): Promise<boolean> {
   try {
-    // CCTP V2 replay protection key is the hash of the full message bytes.
-    const messageHash = ethers.keccak256(messageBytes);
+    const nonce = decodeCctpMessage(messageBytes).nonce;
     const mt = new ethers.Contract(
       destChain.messageTransmitter,
       MESSAGE_TRANSMITTER_ABI,
       signer
     );
-    const result: bigint = await mt.usedNonces(messageHash);
+    const result: bigint = await mt.usedNonces(nonce);
     return result !== 0n;
   } catch {
     return false;
@@ -333,17 +457,137 @@ const MSG_SENT_IFACE  = new ethers.Interface(["event MessageSent(bytes message)"
 // topic0 = keccak256("MessageSent(bytes)") — matches the event regardless of which contract emits it
 const MSG_SENT_TOPIC  = MSG_SENT_IFACE.getEvent("MessageSent")!.topicHash;
 
-function parseMessageSent(receipt: ethers.TransactionReceipt): string | undefined {
-  for (const log of receipt.logs) {
+export type DecodedCctpMessage = {
+  version: number; sourceDomain: number; destinationDomain: number;
+  nonce: string; sender: string; recipient: string; destinationCaller: string;
+  minFinality: number; finalityExecuted: number; bodyVersion: number;
+  burnToken: string; mintRecipient: string; amount: bigint; messageSender: string;
+  maxFee: bigint; feeExecuted: bigint; expirationBlock: bigint;
+};
+
+export function decodeCctpMessage(message: string): DecodedCctpMessage {
+  const bytes = ethers.getBytes(message);
+  if (bytes.length !== 376) throw new Error("CCTP V2 message must be exactly 376 bytes.");
+  const hex = (start: number, length: number) => `0x${message.slice(2 + start * 2, 2 + (start + length) * 2)}`;
+  const u32 = (start: number) => Number(ethers.toBigInt(hex(start, 4)));
+  const addr = (start: number) => ethers.getAddress(`0x${hex(start, 32).slice(-40)}`);
+  return {
+    version: u32(0), sourceDomain: u32(4), destinationDomain: u32(8),
+    nonce: hex(12, 32), sender: hex(44, 32), recipient: hex(76, 32),
+    destinationCaller: hex(108, 32), minFinality: u32(140), finalityExecuted: u32(144),
+    bodyVersion: u32(148), burnToken: addr(152), mintRecipient: addr(184),
+    amount: ethers.toBigInt(hex(216, 32)), messageSender: hex(248, 32),
+    maxFee: ethers.toBigInt(hex(280, 32)), feeExecuted: ethers.toBigInt(hex(312, 32)),
+    expirationBlock: ethers.toBigInt(hex(344, 32)),
+  };
+}
+
+function parseMessageSent(receipt: ethers.TransactionReceipt, sourceMessenger: string): Array<{ message: string; logIndex: number }> {
+  const result: Array<{ message: string; logIndex: number }> = [];
+  for (const [logIndex, log] of receipt.logs.entries()) {
     if (log.topics[0] !== MSG_SENT_TOPIC) continue;
+    if (log.address.toLowerCase() !== sourceMessenger.toLowerCase()) continue;
     try {
       const parsed = MSG_SENT_IFACE.parseLog(log);
       if (parsed?.name === "MessageSent") {
-        return parsed.args[0] as string;
+        result.push({ message: parsed.args[0] as string, logIndex });
       }
     } catch { /* not this log */ }
   }
-  return undefined;
+  return result;
+}
+
+export function validateCctpMessage(
+  message: string,
+  source: ChainConfig,
+  destination: ChainConfig,
+  recipient: string,
+  amount?: string,
+): void {
+  const decoded = decodeCctpMessage(message);
+  if (decoded.version !== 1 || decoded.bodyVersion !== 1) throw new Error("Unsupported CCTP V2 message version.");
+  if (decoded.sourceDomain !== source.cctpDomain || decoded.destinationDomain !== destination.cctpDomain) {
+    throw new Error("CCTP message domains do not match the selected Arc/Base chains.");
+  }
+  if (decoded.recipient.toLowerCase() !== ethers.zeroPadValue(destination.tokenMessenger, 32).toLowerCase()) {
+    throw new Error("CCTP message recipient does not match the destination TokenMessenger.");
+  }
+  if (decoded.destinationCaller !== ethers.ZeroHash) throw new Error("CCTP destination caller is not unrestricted.");
+  if (decoded.burnToken.toLowerCase() !== source.usdcAddress.toLowerCase()) throw new Error("CCTP burn token does not match source USDC.");
+  if (decoded.mintRecipient.toLowerCase() !== recipient.toLowerCase()) throw new Error("CCTP mint recipient does not match the saved destination.");
+  if (amount !== undefined && decoded.amount !== ethers.parseUnits(amount, 6)) {
+    throw new Error("CCTP burn amount does not match the saved transfer.");
+  }
+  if (decoded.maxFee !== 0n) {
+    throw new Error("CCTP max fee must be zero for the standard bridge.");
+  }
+}
+
+function selectSourceMessage(
+  receipt: ethers.TransactionReceipt,
+  source: ChainConfig,
+  destination: ChainConfig,
+  recipient: string,
+  amount: string,
+): { message: string; logIndex: number } {
+  const matches = parseMessageSent(receipt, source.messageTransmitter).filter((candidate) => {
+    try { validateCctpMessage(candidate.message, source, destination, recipient, amount); return true; }
+    catch { return false; }
+  });
+  if (matches.length !== 1) throw new Error(`Expected exactly one valid source MessageSent event, found ${matches.length}.`);
+  const candidate = matches[0];
+  if (decodeCctpMessage(candidate.message).nonce !== ethers.ZeroHash) {
+    throw new Error("Source CCTP nonce must be zero before attestation.");
+  }
+  if (decodeCctpMessage(candidate.message).finalityExecuted !== 0) {
+    throw new Error("Source CCTP finalityExecuted must be zero before attestation.");
+  }
+  return candidate;
+}
+
+/**
+ * Correlate the source MessageSent payload with Circle's final attested V2
+ * message. Circle assigns the nonce and execution fields after the source
+ * event, so full-message hashes are intentionally different.
+ */
+export function isMatchingAttestedMessage(sourceMessage: string, attestedMessage: string): boolean {
+  try {
+    const source = decodeCctpMessage(sourceMessage);
+    const attested = decodeCctpMessage(attestedMessage);
+    return source.nonce === ethers.ZeroHash &&
+      source.finalityExecuted === 0 &&
+      attested.nonce !== ethers.ZeroHash &&
+      attested.finalityExecuted >= source.minFinality &&
+      attested.version === source.version &&
+      attested.sourceDomain === source.sourceDomain &&
+      attested.destinationDomain === source.destinationDomain &&
+      attested.sender === source.sender &&
+      attested.recipient === source.recipient &&
+      attested.destinationCaller === source.destinationCaller &&
+      attested.minFinality === source.minFinality &&
+      attested.bodyVersion === source.bodyVersion &&
+      attested.burnToken === source.burnToken &&
+      attested.mintRecipient === source.mintRecipient &&
+      attested.amount === source.amount &&
+      attested.messageSender === source.messageSender &&
+      attested.maxFee === source.maxFee &&
+      attested.feeExecuted <= attested.maxFee;
+  } catch {
+    return false;
+  }
+}
+
+export function selectUniqueAttestedMessage(
+  sourceMessage: string,
+  messages: readonly string[],
+): string | undefined {
+  const matches = messages.filter((message) =>
+    isMatchingAttestedMessage(sourceMessage, message),
+  );
+  if (matches.length > 1) {
+    throw new Error("Iris returned multiple ambiguous completed CCTP messages.");
+  }
+  return matches[0];
 }
 
 // ── Attestation fetch helpers ─────────────────────────────────────────────────
@@ -359,16 +603,13 @@ type FetchResult =
   | { ok: true;  messages: AttestationMessage[] }
   | { ok: false; diagnostic: string };
 
-type HashResult =
-  | { ok: true;  attestation: string }
-  | { ok: false; status: string; diagnostic: string };
 
 async function fetchAttestation(
   sourceDomain: number,
   burnTxHash: string
 ): Promise<FetchResult> {
   // Use the server-side proxy to avoid CORS restrictions.
-  // Falls back to direct browser calls if the proxy is unreachable.
+  // Production proxy only; direct and sandbox fallbacks are intentionally forbidden.
   const proxyUrl = `/api/attest?domain=${sourceDomain}&txHash=${burnTxHash}`;
 
   try {
@@ -384,59 +625,7 @@ async function fetchAttestation(
     // Proxy unreachable — fall through to direct browser calls
   }
 
-  // Direct browser fallback (may hit CORS on some hosts)
-  const endpoints: Array<{ label: string; url: string }> = [
-    { label: "v2", url: `${ATTESTATION_API}/v2/messages/${sourceDomain}?transactionHash=${burnTxHash}` },
-    { label: "v1", url: `${ATTESTATION_API}/v1/messages/${sourceDomain}/${burnTxHash}` },
-  ];
-  const errors: string[] = ["proxy: unreachable"];
-
-  for (const { label, url } of endpoints) {
-    try {
-      const res = await fetch(url);
-      let body = "";
-      try { body = await res.text(); } catch { /* ignore */ }
-
-      if (!res.ok) {
-        let detail = `${res.status}`;
-        try {
-          const parsed = JSON.parse(body);
-          const msg = parsed?.error ?? parsed?.message ?? parsed?.detail;
-          if (msg) detail += ` — ${String(msg).slice(0, 80)}`;
-        } catch { /* body not JSON */ }
-        errors.push(`${label}: ${detail}`);
-        continue;
-      }
-
-      let data: Record<string, unknown> = {};
-      try { data = JSON.parse(body); } catch { errors.push(`${label}: invalid JSON`); continue; }
-
-      const msgs: AttestationMessage[] = (data?.messages as AttestationMessage[]) ?? [];
-      if (msgs.length > 0) return { ok: true, messages: msgs };
-      errors.push(`${label}: 200 (no messages)`);
-    } catch (e) {
-      const detail = e instanceof TypeError ? "network/CORS error" : String(e).slice(0, 60);
-      errors.push(`${label}: ${detail}`);
-    }
-  }
-
-  return { ok: false, diagnostic: errors.join(" | ") };
-}
-
-/** Poll the content-based /v1/attestations/{messageHash} endpoint. */
-async function fetchAttestationByHash(messageHash: string): Promise<HashResult> {
-  try {
-    const res = await fetch(`/api/attest/hash/${messageHash}`);
-    if (!res.ok) return { ok: false, status: "", diagnostic: `proxy: ${res.status}` };
-    const data = await res.json() as { attestation: string | null; status: string | null; diagnostic: string };
-    if (data.diagnostic) return { ok: false, status: data.status ?? "", diagnostic: data.diagnostic };
-    if (data.attestation && data.attestation !== "PENDING") {
-      return { ok: true, attestation: data.attestation };
-    }
-    return { ok: false, status: data.status ?? "PENDING", diagnostic: `hash: ${data.status ?? "pending"}` };
-  } catch (e) {
-    return { ok: false, status: "", diagnostic: `proxy error: ${e instanceof Error ? e.message.slice(0, 60) : "unknown"}` };
-  }
+  return { ok: false, diagnostic: "proxy unreachable" };
 }
 
 async function pollAttestation(
@@ -445,12 +634,11 @@ async function pollAttestation(
   messageBytes: string | undefined,
   onProgress: (msg: string) => void
 ): Promise<{ message: string; attestation: string }> {
-  const messageHash = messageBytes ? ethers.keccak256(messageBytes) : undefined;
+  if (!messageBytes) throw new Error("Burn receipt did not contain a MessageSent event from the configured MessageTransmitter.");
+  const source = decodeCctpMessage(messageBytes);
 
   onProgress(
-    messageHash
-      ? "Burn confirmed. Waiting for Circle attestation via message hash…"
-      : "Burn confirmed. Waiting for Circle attestation (this can take a few minutes on testnet)…"
+    "Burn confirmed. Waiting for Circle attestation…"
   );
 
   // 600 attempts × 2 s = 20 minutes total. First attempt is immediate.
@@ -463,28 +651,23 @@ async function pollAttestation(
     const elapsedSec = (i + 1) * (POLL_MS / 1000);
     const elapsedStr = elapsedSec >= 60 ? ` · ${Math.floor(elapsedSec / 60)}m` : elapsedSec >= 10 ? ` · ${elapsedSec}s` : "";
 
-    // ── Path 1: message-hash endpoint (/v1/attestations/{hash}) ────────────
-    // Returns a signed attestation once Circle has confirmed the message.
-    // While Circle is still waiting for finality it returns 404 — that is
-    // normal "pending" behaviour, NOT an error.
-    if (messageHash && messageBytes) {
-      const hashResult = await fetchAttestationByHash(messageHash);
-      if (hashResult.ok) {
-        return { message: messageBytes, attestation: hashResult.attestation };
-      }
-    }
-
-    // ── Path 2: tx-hash endpoint (/v2/messages/{domain}?transactionHash=) ──
-    // Also tried every round.  For Arc Testnet this endpoint works and returns
+    // ── Production V2 tx-hash endpoint; immutable-field correlation ──
+    // The endpoint returns
     // "pending_confirmations" while Circle is waiting for block finality, then
     // "complete" with the message + attestation once ready.
     const txResult = await fetchAttestation(sourceDomain, burnTxHash);
     if (txResult.ok) {
-      const complete = txResult.messages.find(
-        (m) => m.attestation && m.attestation !== "PENDING" && m.message
+      const completed = txResult.messages.filter(
+        (message): message is AttestationMessage & { message: string; attestation: string } =>
+          !!message.message && !!message.attestation && message.attestation !== "PENDING",
       );
-      if (complete?.attestation && complete?.message) {
-        return { message: complete.message, attestation: complete.attestation };
+      const selected = selectUniqueAttestedMessage(
+        messageBytes,
+        completed.map((message) => message.message),
+      );
+      if (selected) {
+        const match = completed.find((message) => message.message === selected)!;
+        return { message: match.message, attestation: match.attestation };
       }
       // Tx-hash path found the message but not yet attested — show status
       const status = txResult.messages[0]?.status ?? txResult.messages[0]?.attestation ?? "pending_confirmations";
@@ -497,9 +680,12 @@ async function pollAttestation(
   }
 
   throw new Error(
-    `Attestation timed out after 20 minutes. Your funds are safe — the burn is confirmed on-chain.\n` +
+    `Attestation timed out after 20 minutes.\n` +
+    `Your USDC has been burned on the source chain and is safe — do NOT initiate another burn or you risk a second burn going unattested.\n` +
     `Burn tx: ${burnTxHash}\n` +
-    `You can resume the mint from the bridge UI or manually at https://developers.circle.com/stablecoins/cctp-getting-started`
+    `This is a known intermittent issue with Circle's IRIS attestation service for Arc (domain 26). ` +
+    `Check https://status.circle.com for incidents, then use "Resume" in the bridge UI once attestations recover. ` +
+    `If still stuck after 24 hours, contact Circle support with your burn tx hash above.`
   );
 }
 
@@ -511,6 +697,27 @@ async function pollAttestation(
  * "replacement transaction underpriced". See arc-node#87.
  * Returns undefined if the provider can't supply fee data (non-blocking).
  */
+/**
+ * Fetch a transaction receipt, trying each chain RPC URL in order until one succeeds.
+ * Returns null if the receipt is genuinely not yet available (tx pending on all RPCs),
+ * or if all RPCs are unresponsive (treats as pending to allow retry).
+ */
+async function getReceiptAnyRpc(
+  txHash: string,
+  chain: ChainConfig
+): Promise<ethers.TransactionReceipt | null> {
+  for (const url of [chain.rpcUrl, ...chain.rpcFallbacks]) {
+    try {
+      const p = new ethers.JsonRpcProvider(url);
+      const receipt = await p.getTransactionReceipt(txHash);
+      if (receipt !== null) return receipt;
+    } catch {
+      // RPC unresponsive or rate-limited — try next fallback
+    }
+  }
+  return null;
+}
+
 async function getBumpedGasPrice(signer: ethers.Signer): Promise<bigint | undefined> {
   try {
     const feeData = await signer.provider!.getFeeData();
@@ -521,7 +728,7 @@ async function getBumpedGasPrice(signer: ethers.Signer): Promise<bigint | undefi
   }
 }
 
-// ── Burn path: approve → simulate → transfer fee → depositForBurn ─────────
+// ── Burn path: approve → simulate → standard CCTP V2 depositForBurn ────────
 
 async function burnWithManualFee(
   fromChain: ChainConfig,
@@ -531,14 +738,12 @@ async function burnWithManualFee(
   signer: ethers.Signer,
   signerAddress: string,
   onStatusChange: (status: BridgeStatus) => void
-): Promise<{ burnTxHash: string; feeTxHash?: string; messageBytes?: string }> {
-  const fee             = calculateFee(grossAmountInUnits);
+): Promise<{ burnTxHash: string; feeTxHash?: string; messageBytes?: string; sourceLogIndex?: number }> {
   const mintRecipient32 = addressToBytes32(mintRecipient);
   const usdc            = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
 
   // Set up TokenMessenger early so we can static-call it before the fee transfer.
-  const isV2           = fromChain.cctpVersion === 2;
-  const messengerAbi   = isV2 ? TOKEN_MESSENGER_V2_ABI : TOKEN_MESSENGER_ABI;
+  const messengerAbi   = TOKEN_MESSENGER_V2_ABI;
   const tokenMessenger = new ethers.Contract(fromChain.tokenMessenger, messengerAbi, signer);
   const finalityThreshold = fromChain.minFinalityThreshold ?? 1000;
 
@@ -552,16 +757,24 @@ async function burnWithManualFee(
   // and ethers.js uses the default estimation.
   const gasPrice = await getBumpedGasPrice(signer);
 
-  // Build base overrides: explicit gasLimit on chains where eth_estimateGas is unreliable
-  // (e.g. Arc Testnet), plus the bumped gas price on all chains. See arc-node#80.
-  const writeOverrides: Record<string, unknown> = {
-    ...(fromChain.gasLimitOverride && { gasLimit: fromChain.gasLimitOverride }),
+  // Always provide conservative gas limits for wallet writes. Some wallet RPCs
+  // reject eth_estimateGas with HTTP 403 even though the transaction is valid.
+  // Unused gas is not charged.
+  const commonWriteOverrides: Record<string, unknown> = {
     ...(gasPrice !== undefined    && { gasPrice }),
+  };
+  const approveOverrides = {
+    ...commonWriteOverrides,
+    gasLimit: APPROVE_GAS_LIMIT,
+  };
+  const burnOverrides = {
+    ...commonWriteOverrides,
+    gasLimit: fromChain.gasLimitOverride ?? CCTP_WRITE_GAS_LIMIT,
   };
 
   const allowance: bigint = await usdc.allowance(signerAddress, fromChain.tokenMessenger);
-  if (allowance < fee.bridgeAmount) {
-    const approveTx = await usdc.approve(fromChain.tokenMessenger, fee.bridgeAmount, writeOverrides);
+  if (allowance < grossAmountInUnits) {
+    const approveTx = await usdc.approve(fromChain.tokenMessenger, grossAmountInUnits, approveOverrides);
     onStatusChange({
       step: "approving",
       message: "Approval submitted, waiting for confirmation...",
@@ -585,10 +798,8 @@ async function burnWithManualFee(
   //           (the actual send will fail visibly if there's a real problem).
   onStatusChange({ step: "approving", message: "Simulating cross-chain transfer..." });
 
-  const burnArgs = isV2
-    ? [fee.bridgeAmount, toChain.cctpDomain, mintRecipient32,
+  const burnArgs = [grossAmountInUnits, toChain.cctpDomain, mintRecipient32,
        fromChain.usdcAddress, ethers.ZeroHash, 0n, finalityThreshold]
-    : [fee.bridgeAmount, toChain.cctpDomain, mintRecipient32, fromChain.usdcAddress];
 
   let simCallException: { reason?: string; shortMessage?: string } | null = null;
   let simRpcFailed = false;
@@ -597,7 +808,11 @@ async function burnWithManualFee(
     try {
       const simProvider = new ethers.JsonRpcProvider(rpcUrl);
       const simContract  = new ethers.Contract(fromChain.tokenMessenger, messengerAbi, simProvider);
-      await simContract.depositForBurn.staticCall(...burnArgs, { from: signerAddress });
+      const simRequest = await simContract.depositForBurn.populateTransaction(...burnArgs);
+      // Use a raw eth_call rather than Contract.staticCall. Arc's live
+      // TokenMessenger succeeds with empty return data even though the published
+      // ABI declares a return value; decoding that empty value produces BAD_DATA.
+      await simProvider.call({ ...simRequest, from: signerAddress });
       // Simulation passed — break and proceed to fee transfer
       simCallException = null;
       simRpcFailed = false;
@@ -627,57 +842,30 @@ async function burnWithManualFee(
     // All RPCs were unreachable — simulation inconclusive.
     // Proceed optimistically; if the burn truly reverts the fee tx will be the only loss,
     // but the user has been warned and can see the fee step before approving.
-    console.warn("[bridge] Burn simulation inconclusive — all RPCs unreachable. Proceeding.");
+    // (No console.warn in production — RPC unreachability is not actionable by the user)
   }
 
-  // ── Step 2: Transfer fee ───────────────────────────────────────────────
-  let feeTxHash: string | undefined;
-  if (fee.active) {
-    onStatusChange({
-      step: "collecting",
-      message: `Collecting protocol fee (${fee.feeBps / 100}%)...`,
-    });
-    const feeTx = await usdc.transfer(fee.feeRecipient, fee.feeAmount, writeOverrides);
-    onStatusChange({
-      step: "collecting",
-      message: `Fee of ${formatUsdc(fee.feeAmount)} USDC submitted...`,
-      feeTxHash: feeTx.hash,
-    });
-    const feeReceipt = await waitWithRetry(feeTx, fromChain);
-    if (!feeReceipt) throw new Error("Fee transaction was not confirmed. Please try again.");
-    feeTxHash = feeReceipt.hash;
-  }
-
-  // ── Step 3: depositForBurn ─────────────────────────────────────────────
-  onStatusChange({ step: "burning", message: "Initiating cross-chain transfer...", feeTxHash });
+  // ── Step 2: depositForBurn ─────────────────────────────────────────────
+  onStatusChange({ step: "burning", message: "Initiating cross-chain transfer..." });
 
   // CCTP V2 (Arc Testnet) requires three extra parameters:
   //   destinationCaller = bytes32(0) → anyone may relay
   //   maxFee            = 0          → no premium for fast finality
   //   minFinalityThreshold           → per-chain setting
-  const burnTx = isV2
-    ? await tokenMessenger.depositForBurn(
-        fee.bridgeAmount,
+  const burnTx = await tokenMessenger.depositForBurn(
+         grossAmountInUnits,
         toChain.cctpDomain,
         mintRecipient32,
         fromChain.usdcAddress,
         ethers.ZeroHash,     // destinationCaller = 0 (anyone)
         0n,                  // maxFee = 0
         finalityThreshold,
-        writeOverrides
-      )
-    : await tokenMessenger.depositForBurn(
-        fee.bridgeAmount,
-        toChain.cctpDomain,
-        mintRecipient32,
-        fromChain.usdcAddress,
-        writeOverrides
+        burnOverrides
       );
 
   onStatusChange({
     step: "burning",
     message: "Burn transaction submitted, waiting for confirmation...",
-    feeTxHash,
     burnTxHash: burnTx.hash,
   });
 
@@ -686,8 +874,10 @@ async function burnWithManualFee(
     throw new Error("Burn transaction was not confirmed. Please check the explorer and try again.");
   }
 
-  const messageBytes = parseMessageSent(burnReceipt);
-  return { burnTxHash: burnReceipt.hash, feeTxHash, messageBytes };
+  const sourceCandidate = selectSourceMessage(
+    burnReceipt, fromChain, toChain, mintRecipient, ethers.formatUnits(grossAmountInUnits, 6)
+  );
+  return { burnTxHash: burnReceipt.hash, messageBytes: sourceCandidate.message, sourceLogIndex: sourceCandidate.logIndex };
 }
 
 // ── Main entry point ────────────────────────────────────────────────────────
@@ -736,6 +926,8 @@ export async function executeBridge(
   onStatusChange: (status: BridgeStatus) => void,
   options?: { useGasRelay?: boolean }
 ): Promise<void> {
+  assertFeatureAvailable("bridge");
+  await assertBackendEnvironment();
   if (fromChain.id === toChain.id) {
     throw new Error("Source and destination chains must be different.");
   }
@@ -744,10 +936,6 @@ export async function executeBridge(
   }
 
   const grossAmountInUnits = validateAmount(amount);
-  const fee = calculateFee(grossAmountInUnits);
-  if (fee.active && fee.bridgeAmount <= 0n) {
-    throw new Error("Amount is too small to cover the bridge fee.");
-  }
 
   const currentChainId = await getWalletChainId();
   if (currentChainId !== fromChain.id) {
@@ -757,6 +945,21 @@ export async function executeBridge(
   const provider      = await getProvider();
   const signer        = await provider.getSigner();
   const signerAddress = await signer.getAddress();
+  let destinationNativeBalance: bigint;
+  try {
+    destinationNativeBalance = await new ethers.JsonRpcProvider(toChain.rpcUrl).getBalance(signerAddress);
+  } catch {
+    throw new Error(
+      `Unable to verify ${toChain.shortName} destination gas readiness. ` +
+      `Fund the connected wallet on ${toChain.name}, then try again.`,
+    );
+  }
+  if (toChain.isArc && !hasArcMintGasReserve(destinationNativeBalance)) {
+    throw new Error("Destination Arc gas is insufficient: fund the connected wallet with at least 0.02 native USDC (18 decimals) before bridging. The connected signer pays receiveMessage gas.");
+  }
+  if (!toChain.isArc && !hasBaseMintGasReserve(destinationNativeBalance)) {
+    throw new Error("Destination Base gas is insufficient: fund the connected wallet with at least 0.0001 ETH before bridging. The connected signer pays receiveMessage gas.");
+  }
 
   // Pre-flight balance check — fail early with a clear message
   const usdcForCheck = new ethers.Contract(fromChain.usdcAddress, USDC_ABI, signer);
@@ -768,8 +971,21 @@ export async function executeBridge(
       `Insufficient USDC balance. You have ${have} USDC but need ${need} USDC.`
     );
   }
+  // Arc's native gas asset is USDC with 18 decimals. Never spend the reserve
+  // needed to submit the burn (or strand a wallet with no gas).
+  if (fromChain.isArc) {
+    const nativeBalance = await provider.getBalance(signerAddress);
+    const reserve = ARC_MINT_GAS_RESERVE;
+    const required = grossAmountInUnits * 1_000_000_000_000n + reserve;
+    if (nativeBalance < required) {
+      throw new Error(
+        `Insufficient Arc USDC gas reserve. Keep at least 0.02 USDC for gas; ` +
+        `your requested transfer would leave less than the safe reserve.`
+      );
+    }
+  }
 
-  const useGasRelay = !!(options?.useGasRelay && toChain.gasRelayerAddress);
+  const useGasRelay = false;
   // When relaying, the CCTP mintRecipient is the GasRelayer contract on the destination chain.
   // The GasRelayer then mints USDC to itself and forwards (amount - relayFee) to the user.
   const mintRecipientForBurn = useGasRelay ? toChain.gasRelayerAddress! : recipientAddress;
@@ -781,6 +997,7 @@ export async function executeBridge(
   const burnTxHash   = result.burnTxHash;
   const feeTxHash    = result.feeTxHash;
   const messageBytes = result.messageBytes;
+  const sourceLogIndex = result.sourceLogIndex;
 
   // ── Attest ────────────────────────────────────────────────────────────
   onStatusChange({
@@ -791,13 +1008,14 @@ export async function executeBridge(
     feeTxHash,
     burnTxHash,
     messageBytes,
+    sourceLogIndex,
   });
 
   const attestationResult = await pollAttestation(
     fromChain.cctpDomain,
     burnTxHash,
     messageBytes,
-    (msg) => onStatusChange({ step: "attesting", message: msg, feeTxHash, burnTxHash, messageBytes })
+    (msg) => onStatusChange({ step: "attesting", message: msg, feeTxHash, burnTxHash, messageBytes, sourceLogIndex })
   );
 
   if (useGasRelay) {
@@ -825,11 +1043,11 @@ export async function executeBridge(
       mintTxHash: relayTxHash,
     });
 
-    // Poll for the relay tx receipt on the destination chain
-    const destProvider = new ethers.JsonRpcProvider(toChain.rpcUrl);
+    // Poll for the relay tx receipt on the destination chain, using fallback RPCs so a
+    // single unresponsive node doesn't falsely report the relay as unconfirmed.
     let relayReceipt: ethers.TransactionReceipt | null = null;
     for (let i = 0; i < 60; i++) {
-      relayReceipt = await destProvider.getTransactionReceipt(relayTxHash);
+      relayReceipt = await getReceiptAnyRpc(relayTxHash, toChain);
       if (relayReceipt) break;
       await new Promise((r) => setTimeout(r, 5000));
     }
@@ -840,7 +1058,16 @@ export async function executeBridge(
       );
     }
 
-    const netAmount = formatUsdc(fee.bridgeAmount - GAS_RELAY_FEE_UNITS);
+    if (relayReceipt.status === 0) {
+      throw new Error(
+        `Relay transaction reverted on-chain — the GasRelayer contract rejected the mint.\n` +
+        `Relay tx: ${relayTxHash}\n` +
+        `Check ${toChain.explorerUrl}/tx/${relayTxHash} for the revert reason. ` +
+        `Your burn is confirmed and the attestation is still valid — contact support for recovery.`
+      );
+    }
+
+    const netAmount = formatUsdc(grossAmountInUnits);
     onStatusChange({
       step: "done",
       message: `Relay complete! ${netAmount} USDC arrived on ${toChain.name} (1 USDC relay fee deducted).`,
@@ -861,13 +1088,14 @@ export async function executeBridge(
     await switchToChain(toChain);
     await waitForChainSwitch(toChain.id);
 
-    const destProvider = await getProvider();
-    const destSigner   = await destProvider.getSigner();
+    // Re-verify the signer is on the right chain — MetaMask has a brief race where
+    // eth_chainId reports the new chain before the RPC router has actually switched.
+    const destSigner = await getSignerOnChain(toChain.id);
 
     // Nonce replay check — message may have been minted in a previous attempt
     const alreadyMinted = await checkNonceUsed(attestationResult.message, toChain, destSigner);
     if (alreadyMinted) {
-      const receivedAmount = formatUsdc(fee.bridgeAmount);
+      const receivedAmount = formatUsdc(grossAmountInUnits);
       onStatusChange({
         step: "done",
         message: `Already bridged! ${receivedAmount} USDC is on ${toChain.name} (message was previously received).`,
@@ -885,7 +1113,15 @@ export async function executeBridge(
 
     onStatusChange({ step: "minting", message: "Minting USDC on destination chain...", feeTxHash, burnTxHash });
 
-    const mintOverrides = toChain.gasLimitOverride ? { gasLimit: toChain.gasLimitOverride } : {};
+    // Arc Testnet as destination requires a bumped gas price — eth_gasPrice on Arc
+    // can be stale or elevated, causing "underpriced" failures without the 30% bump.
+    const mintOverrides: Record<string, bigint> = {
+      gasLimit: toChain.gasLimitOverride ?? CCTP_WRITE_GAS_LIMIT,
+    };
+    if (toChain.isArc) {
+      const bumpedGasPrice = await getBumpedGasPrice(destSigner);
+      if (bumpedGasPrice !== undefined) mintOverrides.gasPrice = bumpedGasPrice;
+    }
     const mintTx = await messageTransmitter.receiveMessage(
       attestationResult.message,
       attestationResult.attestation,
@@ -902,7 +1138,7 @@ export async function executeBridge(
 
     const mintReceipt = await waitWithRetry(mintTx, toChain);
 
-    const receivedAmount = formatUsdc(fee.bridgeAmount);
+    const receivedAmount = formatUsdc(grossAmountInUnits);
     onStatusChange({
       step: "done",
       message: `Bridge complete! ${receivedAmount} USDC has arrived on ${toChain.name}.`,
@@ -926,8 +1162,31 @@ export async function resumeBridge(
   burnTxHash: string,
   messageBytes: string | undefined,
   feeTxHash: string | undefined,
+  recipient: string,
+  amount: string,
+  sourceMessageHash: string | undefined,
+  sourceLogIndex: number | undefined,
   onStatusChange: (status: BridgeStatus) => void
 ): Promise<void> {
+  assertFeatureAvailable("bridge");
+  await assertBackendEnvironment();
+  if (fromChain.id !== 5042 && fromChain.id !== 8453 || toChain.id !== 5042 && toChain.id !== 8453 ||
+      fromChain.id === toChain.id) throw new Error("Resume is restricted to Arc Mainnet and Base Mainnet.");
+  const receipt = await getReceiptAnyRpc(burnTxHash, fromChain);
+  if (!receipt || receipt.status !== 1) {
+    throw new Error("The source burn receipt is unavailable or failed; no wallet action was requested.");
+  }
+  const sourceCandidate = selectSourceMessage(receipt, fromChain, toChain, recipient, amount);
+  if (sourceMessageHash && ethers.keccak256(sourceCandidate.message) !== sourceMessageHash) {
+    throw new Error("Saved source message hash does not match the authoritative receipt.");
+  }
+  if (sourceLogIndex !== undefined && sourceCandidate.logIndex !== sourceLogIndex) {
+    throw new Error("Saved source MessageSent log index does not match the authoritative receipt.");
+  }
+  if (messageBytes && ethers.keccak256(messageBytes) !== ethers.keccak256(sourceCandidate.message)) {
+    throw new Error("Saved source CCTP message does not match the authoritative receipt.");
+  }
+  messageBytes = sourceCandidate.message;
   onStatusChange({
     step: "attesting",
     message: messageBytes
@@ -955,8 +1214,9 @@ export async function resumeBridge(
   await switchToChain(toChain);
   await waitForChainSwitch(toChain.id);
 
-  const destProvider = await getProvider();
-  const destSigner   = await destProvider.getSigner();
+  // Re-verify the signer is on the right chain — MetaMask has a brief race where
+  // eth_chainId reports the new chain before the RPC router has actually switched.
+  const destSigner = await getSignerOnChain(toChain.id);
 
   // Nonce replay check — may have already been minted
   const alreadyMinted = await checkNonceUsed(attestationResult.message, toChain, destSigner);
@@ -978,8 +1238,15 @@ export async function resumeBridge(
 
   onStatusChange({ step: "minting", message: "Minting USDC on destination chain...", feeTxHash, burnTxHash });
 
-  // Apply gas override on chains where eth_estimateGas is unreliable (e.g. Arc Testnet as destination).
-  const mintOverrides = toChain.gasLimitOverride ? { gasLimit: toChain.gasLimitOverride } : {};
+  // Arc Testnet as destination requires a bumped gas price — eth_gasPrice on Arc
+  // can be stale or elevated, causing "underpriced" failures without the 30% bump.
+  const mintOverrides: Record<string, bigint> = {
+    gasLimit: toChain.gasLimitOverride ?? CCTP_WRITE_GAS_LIMIT,
+  };
+  if (toChain.isArc) {
+    const bumpedGasPrice = await getBumpedGasPrice(destSigner);
+    if (bumpedGasPrice !== undefined) mintOverrides.gasPrice = bumpedGasPrice;
+  }
   const mintTx = await messageTransmitter.receiveMessage(
     attestationResult.message,
     attestationResult.attestation,
@@ -1002,5 +1269,100 @@ export async function resumeBridge(
     feeTxHash,
     burnTxHash,
     mintTxHash: mintReceipt.hash,
+  });
+}
+
+
+// ── Resume — gas relay path ───────────────────────────────────────────────────
+
+/**
+ * Resume an interrupted gas-relay bridge from the attestation step.
+ * Used when the session was saved with useGasRelay=true.
+ *
+ * The burn's mintRecipient was the GasRelayer contract, so we must call
+ * the relay API — NOT receiveMessage directly — to get USDC to the user.
+ */
+export async function resumeBridgeGasRelay(
+  fromChain: ChainConfig,
+  toChain: ChainConfig,
+  burnTxHash: string,
+  messageBytes: string | undefined,
+  feeTxHash: string | undefined,
+  recipientAddress: string,
+  onStatusChange: (status: BridgeStatus) => void
+): Promise<void> {
+  assertFeatureAvailable("relay");
+  await assertBackendEnvironment();
+  onStatusChange({
+    step: "attesting",
+    message: messageBytes
+      ? "Resuming: waiting for Circle attestation via message hash…"
+      : "Resuming: waiting for Circle attestation…",
+    feeTxHash,
+    burnTxHash,
+    messageBytes,
+  });
+
+  const attestationResult = await pollAttestation(
+    fromChain.cctpDomain,
+    burnTxHash,
+    messageBytes,
+    (msg) => onStatusChange({ step: "attesting", message: msg, feeTxHash, burnTxHash, messageBytes })
+  );
+
+  onStatusChange({
+    step: "minting",
+    message: "Requesting gasless relay — server will mint USDC on your behalf…",
+    feeTxHash,
+    burnTxHash,
+  });
+
+  const relayTxHash = await callGasRelayApi(
+    toChain,
+    attestationResult.message,
+    attestationResult.attestation,
+    recipientAddress,
+    GAS_RELAY_FEE_UNITS * 2n,
+  );
+
+  onStatusChange({
+    step: "minting",
+    message: "Relay submitted — waiting for confirmation on destination chain…",
+    feeTxHash,
+    burnTxHash,
+    mintTxHash: relayTxHash,
+  });
+
+  // Poll for the relay tx receipt, using fallback RPCs so a single unresponsive
+  // node doesn't falsely report the relay as unconfirmed.
+  let relayReceipt: ethers.TransactionReceipt | null = null;
+  for (let i = 0; i < 60; i++) {
+    relayReceipt = await getReceiptAnyRpc(relayTxHash, toChain);
+    if (relayReceipt) break;
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+
+  if (!relayReceipt) {
+    throw new Error(
+      `Relay transaction submitted (${relayTxHash}) but not yet confirmed. ` +
+      `Check ${toChain.explorerUrl}/tx/${relayTxHash} — your USDC will arrive once it confirms.`
+    );
+  }
+
+  if (relayReceipt.status === 0) {
+    throw new Error(
+      `Relay transaction reverted on-chain — the GasRelayer contract rejected the mint.\n` +
+      `Relay tx: ${relayTxHash}\n` +
+      `Check ${toChain.explorerUrl}/tx/${relayTxHash} for the revert reason. ` +
+      `Your burn is confirmed and the attestation is still valid — contact support for recovery.`
+    );
+  }
+
+  onStatusChange({
+    step: "done",
+    message: `Relay complete! USDC has arrived on ${toChain.name} (relay fee deducted).`,
+    feeTxHash,
+    burnTxHash,
+    mintTxHash: relayReceipt.hash,
   });
 }

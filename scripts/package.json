@@ -7,13 +7,21 @@
     "hello": "tsx ./src/hello.ts",
     "compile": "tsx ./src/compile.ts",
     "compile-yield": "tsx ./src/compileYield.ts",
+    "compile-paymaster": "tsx ./src/compilePaymaster.ts",
     "deploy": "tsx ./src/deployFeeRouter.ts",
     "deploy-relayer": "tsx ./src/deployGasRelayer.ts",
     "deploy-yield": "tsx ./src/deployYield.ts",
+    "deploy-paymaster": "tsx ./src/deployPaymaster.ts",
+    "deploy-all": "tsx ./src/deployAll.ts",
+    "fund-paymaster": "tsx ./src/fundPaymaster.ts",
+    "lint-contract": "tsx ./src/lint-arc-contract.ts",
+    "mainnet-preflight": "tsx ./src/mainnetPreflight.ts",
+    "test:gas-relayer-v2": "tsx ./src/testGasRelayerV2.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "ganache": "^7.9.2",
     "tsx": "catalog:"
   },
   "dependencies": {

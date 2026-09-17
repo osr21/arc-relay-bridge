@@ -1,0 +1,81 @@
+import { Router } from "express";
+
+const router = Router();
+
+const VALID_NETWORKS = new Set(["sepolia", "base-sepolia", "avalanche-fuji"]);
+
+// Whitelist of JSON-RPC methods the bundler proxy is allowed to forward.
+// Prevents this endpoint from being used as an open proxy for arbitrary Pimlico calls.
+const ALLOWED_METHODS = new Set([
+  // ERC-4337 standard methods
+  "eth_sendUserOperation",
+  "eth_estimateUserOperationGas",
+  "eth_getUserOperationByHash",
+  "eth_getUserOperationReceipt",
+  "eth_supportedEntryPoints",
+  // Pimlico-specific methods
+  "pimlico_getUserOperationGasPrice",
+  "pimlico_sendCompressedUserOperation",
+  "pimlico_getUserOperationStatus",
+  // Pimlico paymaster methods (used by permissionless for sponsored UserOps)
+  "pm_getPaymasterStubData",
+  "pm_getPaymasterData",
+]);
+
+router.post("/bundler/:network", async (req, res) => {
+  const { network } = req.params;
+
+  if (!VALID_NETWORKS.has(network)) {
+    res.status(400).json({ error: "Unsupported network" });
+    return;
+  }
+
+  const apiKey = process.env["PIMLICO_API_KEY"];
+  if (!apiKey) {
+    res.status(500).json({ error: "Bundler not configured" });
+    return;
+  }
+
+  const body = req.body ?? {};
+
+  // Validate minimal JSON-RPC 2.0 structure before forwarding to Pimlico.
+  // Prevents malformed payloads from reaching the upstream bundler.
+  if (typeof body !== "object" || Array.isArray(body)) {
+    res.status(400).json({ error: "Request body must be a JSON object" });
+    return;
+  }
+  if (body.jsonrpc !== "2.0") {
+    res.status(400).json({ error: "jsonrpc must be \"2.0\"" });
+    return;
+  }
+  if (!Array.isArray(body.params)) {
+    res.status(400).json({ error: "params must be an array" });
+    return;
+  }
+
+  const { method } = body;
+  if (typeof method !== "string" || !ALLOWED_METHODS.has(method)) {
+    res.status(400).json({ error: `Method not allowed: ${method}` });
+    return;
+  }
+
+  try {
+    const url = `https://api.pimlico.io/v2/${network}/rpc?apikey=${apiKey}`;
+    const upstream = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+      signal: AbortSignal.timeout(20_000),
+    });
+    const data = await upstream.json();
+    res.status(upstream.status).json(data);
+  } catch (err) {
+    const isTimeout = err instanceof Error && err.name === "TimeoutError";
+    req.log.error({ err }, "Bundler proxy error");
+    res.status(isTimeout ? 504 : 502).json({
+      error: isTimeout ? "Bundler request timed out" : "Bundler unreachable",
+    });
+  }
+});
+
+export default router;

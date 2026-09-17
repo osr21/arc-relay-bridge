@@ -584,6 +584,12 @@ export default function YieldPage() {
             >
               Paymaster ↗
             </a>
+            <a
+              href="/refuel"
+              className="text-sm text-orange-400/70 hover:text-orange-400 transition-colors hidden sm:block"
+            >
+              Refuel →
+            </a>
             <button
               onClick={() => void load(walletAddress ?? undefined)}
               disabled={refreshing}

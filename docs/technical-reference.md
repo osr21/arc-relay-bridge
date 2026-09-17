@@ -1,117 +1,86 @@
-# Technical Reference
+# Arc ↔ Base mainnet technical reference
 
-  ## CCTP V2 contracts (same on all chains)
+## Network and contract configuration
 
-  | Contract | Address |
-  |---|---|
-  | TokenMessenger | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` |
-  | MessageTransmitter | `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` |
+| Property | Arc Mainnet | Base Mainnet |
+|---|---|---|
+| Chain ID | `5042` | `8453` |
+| CCTP domain | `26` | `6` |
+| RPC | `https://rpc.mainnet.arc.io` | `https://mainnet.base.org` |
+| Explorer | `https://explorer.arc.io` | `https://basescan.org` |
+| USDC | `0x3600000000000000000000000000000000000000` | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
+| Finality threshold | `2000` | `2000` |
 
-  ## USDC addresses
+Both routes use Circle's mainnet CCTP V2 contracts:
 
-  | Chain | Address | Decimals |
-  |---|---|---|
-  | Arc Testnet | `0x3600000000000000000000000000000000000000` | 6 (ERC-20 interface) |
-  | Ethereum Sepolia | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` | 6 |
-  | Base Sepolia | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | 6 |
-  | Avalanche Fuji | `0x5425890298aed601595a70AB815c96711a31Bc65` | 6 |
+| Contract | Address |
+|---|---|
+| TokenMessenger | `0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d` |
+| MessageTransmitter | `0x81D40F21F12A8F0E3252Bccb954D722d4c464B64` |
 
-  > Arc USDC is at a special system address. Always use the ERC-20 interface — never assume 18 decimals.
+The Arc USDC system address exposes a six-decimal ERC-20 interface. Arc wallet
+network metadata describes its native gas currency as USDC with 18 native
+decimals; applications must not use that value for ERC-20 amount conversion.
 
-  ## Paymaster v5 (ERC-4337 v0.7)
+## CCTP V2 burn
 
-  | Chain | Address |
-  |---|---|
-  | Arc Testnet | `0xfD06D288d481515a986DF28030AF013De290D76C` |
-  | Ethereum Sepolia | `0xC9E9ba0bfE58FA438B8B6f2182d3ADA3669F9Eb4` |
-  | Base Sepolia | `0xe355E9dCdEAB37eA8fd81b9457Ad2C56d3eE9055` |
-  | Avalanche Fuji | `0x7C75A75B59b63871e1Bb47fA63e541F0e5975f93` |
+```solidity
+function depositForBurn(
+    uint256 amount,
+    uint32 destinationDomain,
+    bytes32 mintRecipient,
+    address burnToken,
+    bytes32 destinationCaller,
+    uint256 maxFee,
+    uint32 minFinalityThreshold
+) returns (uint64 nonce);
+```
 
-  ## FeeRouter v2
+Enabled bridge parameters:
 
-  | Chain | Address |
-  |---|---|
-  | Arc Testnet | `0x8256a1e1f8971448b49dA0F55b8A1BB6557eA8FC` |
-  | Ethereum Sepolia | `0x5B1F511ed4dF76f369671BF1c4aCF0dD84CC0804` |
-  | Base Sepolia | `0x8d4B57eD464df10414Dde3ADC2E403a01ebc50d8` |
-  | Avalanche Fuji | `0x64D160b7E91e78e52dFc0e8829640E32A919164C` |
+- `amount`: six-decimal USDC units
+- `mintRecipient`: recipient address left-padded to 32 bytes
+- `destinationCaller`: zero bytes32, allowing anyone to submit the mint
+- `maxFee`: `0`; Fast Transfer is not requested
+- `minFinalityThreshold`: `2000`
 
-  Fee recipient: `0xdb5019b8DfbccEF8906C39B16a4870082eAbBc4C`
+The bridge uses raw `eth_call` for burn preflight. Arc can return empty success
+data for a successful write simulation; ABI-decoding that empty return as a
+`uint64` can incorrectly report `BAD_DATA`.
 
-  ## ERC-4337 EntryPoint
+## Production Iris
 
-  All chains: `0x0000000071727De22E5E9d8BAf0edAc6f37da032` (v0.7, CREATE2)
+Base URL:
 
-  ## RPC endpoints
+```text
+https://iris-api.circle.com
+```
 
-  | Chain | Endpoint |
-  |---|---|
-  | Arc Testnet | `https://rpc.testnet.arc.io` |
-  | Ethereum Sepolia | `https://ethereum-sepolia-rpc.publicnode.com` |
-  | Base Sepolia | `https://sepolia.base.org` |
-  | Avalanche Fuji | `https://api.avax-test.network/ext/bc/C/rpc` |
+The bridge queries the transaction endpoint and correlates returned messages
+with the source `MessageSent` log. It does not assume that source and attested
+message bytes are identical.
 
-  > Do not use `rpc.sepolia.org` — unreliable/down.
+## Receipt and resume invariants
 
-  ## CCTP domain map
+- A displayed burn transaction hash means a transaction was submitted.
+- Wallet RPC HTTP 403, `-32080`, timeout, connection, or coalescing errors after
+  broadcast are treated as recoverable receipt-wait failures.
+- Static source RPCs are used to retrieve the authoritative receipt.
+- An in-progress session stores the route, amount, recipient, burn hash, source
+  message identity, and any available message bytes.
+- Resume re-fetches and verifies the source receipt.
+- Mint replay checks use the nonce from the attested message.
+- The UI must not offer a new transfer while an unresolved burn hash exists.
 
-  | Chain | Domain |
-  |---|---|
-  | Ethereum Sepolia | 0 |
-  | Avalanche Fuji | 1 |
-  | Base Sepolia | 6 |
-  | Arc Testnet | 26 |
+## Gas requirements
 
-  ## depositForBurn V2 signature
+Users need source-chain gas for approval and burn and destination-chain gas for
+`receiveMessage`. Arc gas is paid with Arc's native USDC representation; Base
+gas is paid with ETH. The app performs destination reserve checks before burn.
 
-  ```solidity
-  function depositForBurn(
-      uint256 amount,
-      uint32  destinationDomain,
-      bytes32 mintRecipient,        // 0x000...{20-byte address}
-      address burnToken,
-      bytes32 destinationCaller,    // bytes32(0) = anyone may relay
-      uint256 maxFee,               // 0 = no fee cap
-      uint32  minFinalityThreshold  // Arc=2000, others=1000
-  ) external returns (uint64 nonce);
-  ```
+## Official sources
 
-  Selector: `0x8e0250ee` — V1 selector `0x6fd3504e` will revert on these contracts.
-
-  ## Circle Iris attestation API
-
-  - Sandbox: `https://iris-api-sandbox.circle.com`
-  - Poll: every 5 s | Timeout: 20 min
-  - Success: `{ status: "complete", attestation: "0x..." }`
-
-  ## Block explorers
-
-  | Chain | Explorer | TX path |
-  |---|---|---|
-  | Arc Testnet | https://testnet.arcscan.app | /tx/{hash} |
-  | Ethereum Sepolia | https://sepolia.etherscan.io | /tx/{hash} |
-  | Base Sepolia | https://sepolia.basescan.org | /tx/{hash} |
-  | Avalanche Fuji | https://testnet.snowtrace.io | /tx/{hash} |
-
-  ## Library versions
-
-  | Library | Version |
-  |---|---|
-  | ethers.js | v6 |
-  | permissionless | v0.3.6 |
-  | viem | v2.51.3 |
-  | ERC-4337 EntryPoint | v0.7 |
-
-  ## Paymaster key ABI
-
-  ```json
-  [
-    "function deposit(uint256 amount)",
-    "function withdraw(uint256 amount)",
-    "function balances(address) view returns (uint256)",
-    "function locked(address) view returns (uint256)",
-    "function gasRate() view returns (uint256)",
-    "event GasSponsored(address indexed user, uint256 usdcDeducted, uint256 remainingBalance)"
-  ]
-  ```
-  
+- [Arc network settings](https://docs.arc.io/arc/references/connect-to-arc)
+- [Circle CCTP addresses](https://developers.circle.com/cctp/references/contract-addresses)
+- [Circle USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses)
+- [Base network settings](https://docs.base.org/get-started/connect-to-base)

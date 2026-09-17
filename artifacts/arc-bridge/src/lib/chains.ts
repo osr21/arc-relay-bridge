@@ -1,3 +1,5 @@
+import { MAINNET_CHAINS, MAINNET_IRIS_API } from "@workspace/arc-relay-sdk/mainnet";
+
 export interface ChainConfig {
   id: number;
   hexId: string;
@@ -35,92 +37,13 @@ export interface ChainConfig {
   logoColor: string;
 }
 
-export const CHAINS: Record<string, ChainConfig> = {
-  ARC_TESTNET: {
-    id: 5042002,
-    hexId: "0x4CEF52",
-    name: "Arc Testnet",
-    shortName: "Arc",
-    rpcUrl: "https://rpc.drpc.testnet.arc.network",
-    rpcFallbacks: [
-      "https://rpc.testnet.arc.network",
-    ],
-    explorerUrl: "https://testnet.arcscan.app",
-    cctpDomain: 26,
-    usdcAddress: "0x3600000000000000000000000000000000000000",
-    tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
-    messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
-    nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
-    isArc: true,
-    cctpVersion: 2,
-    minFinalityThreshold: 2000,
-    gasLimitOverride: 600000n,
-    gasRelayerAddress: "0x837D9a19C07bb7B4E95071dC0BaED72D4dE04ea1",
-    logoColor: "#354457",
-  },
-  ETH_SEPOLIA: {
-    id: 11155111,
-    hexId: "0xaa36a7",
-    name: "Ethereum Sepolia",
-    shortName: "Sepolia",
-    rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
-    rpcFallbacks: [
-      "https://sepolia.drpc.org",
-      "https://1rpc.io/sepolia",
-    ],
-    explorerUrl: "https://sepolia.etherscan.io",
-    cctpDomain: 0,
-    usdcAddress: "0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238",
-    tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
-    messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    cctpVersion: 2,
-    minFinalityThreshold: 0,
-    gasRelayerAddress: "0x5E87F210043D8457caCAd0F0c9aB70a99497Eec9",
-    logoColor: "#627EEA",
-  },
-  BASE_SEPOLIA: {
-    id: 84532,
-    hexId: "0x14A34",
-    name: "Base Sepolia",
-    shortName: "Base Sep",
-    rpcUrl: "https://sepolia.base.org",
-    rpcFallbacks: [
-      "https://base-sepolia.drpc.org",
-      "https://base-sepolia-rpc.publicnode.com",
-    ],
-    explorerUrl: "https://sepolia.basescan.org",
-    cctpDomain: 6,
-    usdcAddress: "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
-    tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
-    messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    cctpVersion: 2,
-    minFinalityThreshold: 0,
-    gasRelayerAddress: "0x64D160b7E91e78e52dFc0e8829640E32A919164C",
-    logoColor: "#0052FF",
-  },
-  AVAX_FUJI: {
-    id: 43113,
-    hexId: "0xA869",
-    name: "Avalanche Fuji",
-    shortName: "Fuji",
-    rpcUrl: "https://api.avax-test.network/ext/bc/C/rpc",
-    rpcFallbacks: [
-      "https://avalanche-fuji.drpc.org",
-    ],
-    explorerUrl: "https://testnet.snowtrace.io",
-    cctpDomain: 1,
-    usdcAddress: "0x5425890298aed601595a70AB815c96711a31Bc65",
-    tokenMessenger: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA",
-    messageTransmitter: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275",
-    nativeCurrency: { name: "AVAX", symbol: "AVAX", decimals: 18 },
-    cctpVersion: 2,
-    minFinalityThreshold: 0,
-    gasRelayerAddress: "0x6F80056564491425273A6a481EcC5DAea9D57f23",
-    logoColor: "#E84142",
-  },
+const MAINNET_CHAIN_CONFIG: Record<string, ChainConfig> = {
+  ARC_MAINNET: { ...MAINNET_CHAINS.ARC_MAINNET },
+  BASE_MAINNET: { ...MAINNET_CHAINS.BASE_MAINNET },
 };
+
+/** Only Arc (5042) and Base (8453) are selectable in the default mainnet-preparing build. */
+export const CHAINS: Record<string, ChainConfig> = MAINNET_CHAIN_CONFIG;
 
 export const CHAIN_LIST = Object.values(CHAINS);
 
@@ -152,7 +75,8 @@ export async function createRpcProvider(
   throw lastErr ?? new Error(`All RPCs failed for ${chain.name}`);
 }
 
-export const ATTESTATION_API = "https://iris-api-sandbox.circle.com";
+/** No sandbox Iris fallback is permitted in a mainnet build. */
+export const ATTESTATION_API = MAINNET_IRIS_API;
 
 export const USDC_ABI = [
   "function approve(address spender, uint256 amount) returns (bool)",

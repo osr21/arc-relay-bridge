@@ -1,127 +1,79 @@
-# Development Guide
+# Development guide
 
-  ## Prerequisites
+## Mainnet-first constraints
 
-  - Node.js 24+, pnpm 9+, MetaMask
-  - Secrets: `PIMLICO_API_KEY`, `DEPLOYER_PRIVATE_KEY`, `FEE_RECIPIENT`, `SESSION_SECRET`
+The bridge runtime supports Arc Mainnet and Base Mainnet only. The configuration
+is pinned in `lib/arc-relay-sdk/src/mainnet.ts`. There is no environment switch
+that unlocks testnets or disabled services.
 
-  ## Project structure
+Historical testnet contracts and scripts remain isolated development material.
+Do not import their deployment manifests into the mainnet frontend.
 
-  ```
-  artifacts/arc-bridge/src/
-    lib/
-      chains.ts           Chain configs, CCTP domains, contract addresses, ABIs
-      bridge.ts           Standard CCTP flow (approve → burn → attest → mint)
-      gaslessBridge.ts    ERC-4337 gasless flow + Paymaster deposit
-      aa.ts               permissionless SimpleAccount + bundler clients
-      paymaster.ts        Paymaster v5 addresses ← update after redeploy
-      config.ts           FeeRouter config
-      session.ts          Bridge session persistence (localStorage)
-    pages/
-      BridgePage.tsx      Main bridge UI (standard + gasless)
-      PaymasterPage.tsx   Gasless setup UI
+## Project structure
 
-  artifacts/api-server/src/routes/
-    paymaster.ts          Paymaster address registry ← also update after redeploy
-    gasRelay.ts           Gasless mint relay
-    oracle.ts             USDC price feed
+```text
+artifacts/arc-bridge/              React + Vite bridge
+  src/lib/bridge.ts                approve, burn, attest, mint, resume
+  src/lib/chains.ts                mainnet chain adapter
+  src/lib/session.ts               validated local resume session
+  src/pages/BridgePage.tsx         bridge and recovery UI
+lib/arc-relay-sdk/src/mainnet.ts   public mainnet configuration and feature gates
+artifacts/api-server/              optional server routes; not a bridge custodian
+scripts/                           probes, tests, and historical deployment tooling
+docs/                              architecture, validation, and protocol notes
+```
 
-  contracts/
-    Paymaster.sol         ERC-4337 v0.7 USDC gas vault
-    FeeRouter.sol         CCTP fee routing
+## Run and verify
 
-  scripts/src/
-    deployPaymaster.ts    Deploy + auto-fund Paymaster (all chains)
-    fundPaymaster.ts      Top up EntryPoint ETH deposits
-    compilePaymaster.ts   Compile Paymaster.sol → ABI + bytecode
-    deployFeeRouter.ts    Deploy FeeRouter
-  ```
+```bash
+pnpm install
+pnpm --filter @workspace/arc-bridge run dev
 
-  ## Running locally
+pnpm --filter @workspace/arc-bridge run typecheck
+pnpm --filter @workspace/scripts exec tsx --test \
+  ../artifacts/arc-bridge/src/lib/bridge.mainnet.test.ts
+pnpm --filter @workspace/arc-bridge run build
+```
 
-  ```bash
-  pnpm install
-  pnpm --filter @workspace/arc-bridge run dev     # bridge frontend
-  pnpm --filter @workspace/api-server run dev     # API server (gasless relay + oracle)
-  pnpm run typecheck                              # full typecheck across all packages
-  ```
+The enabled bridge executes in the browser through the connected wallet. It
+uses public source and destination RPCs plus Circle's production Iris API.
 
-  ## Deploying contracts
+## Secrets
 
-  ### Paymaster
+No secret is required for standard frontend bridge development. `.env.example`
+documents optional server and contract-development variables. Store real values
+in Replit Secrets or an equivalent secret manager; never place them in source
+files, shell history, documentation, issue bodies, or screenshots.
 
-  ```bash
-  # Compile
-  pnpm --filter @workspace/scripts run compile-paymaster
+`DEPLOYER_PRIVATE_KEY` is never needed to run the standard bridge and must not
+be used without explicit authorization for a separately reviewed deployment.
 
-  # Deploy + auto-fund EntryPoint (0.05 ETH per chain)
-  pnpm --filter @workspace/scripts run deploy-paymaster
+## Changing bridge behavior
 
-  # Top up existing EntryPoint deposits
-  pnpm --filter @workspace/scripts run fund-paymaster
-  pnpm --filter @workspace/scripts run fund-paymaster -- --only sepolia --amount 0.05
-  pnpm --filter @workspace/scripts run fund-paymaster -- --only base   --amount 0.02
-  pnpm --filter @workspace/scripts run fund-paymaster -- --only fuji   --amount 0.05
-  ```
+Any route or CCTP change must preserve:
 
-  **After every deploy, update BOTH address files:**
+1. Official mainnet chain IDs, CCTP domains, USDC addresses, and contracts
+2. Exact six-decimal ERC-20 amount conversion
+3. Recipient and destination-domain validation
+4. Session persistence as soon as a burn hash exists
+5. Receipt-authoritative recovery after wallet RPC errors
+6. Unique source/Iris message correlation
+7. Attested nonce replay checks
+8. Destination gas checks before burn
+9. No application fee unless separately approved
 
-  ```typescript
-  // artifacts/arc-bridge/src/lib/paymaster.ts
-  export const PAYMASTER_ADDRESSES: Record<number, string> = {
-    5042002:  "0x...", // Arc Testnet
-    11155111: "0x...", // Ethereum Sepolia
-    84532:    "0x...", // Base Sepolia
-    43113:    "0x...", // Avalanche Fuji
-  };
+Run the full bridge test file after any change to these invariants.
 
-  // artifacts/api-server/src/routes/paymaster.ts — same values
-  ```
+## Mainnet canaries
 
-  Forgetting the API server file causes silent UserOp rejections (relay validates against old address).
+Automated checks must not send mainnet transactions. A live canary requires
+explicit authorization, a deliberately limited amount, verified official
+addresses, sufficient gas on both chains, and manual transaction review. Record
+public transaction hashes and results in `docs/mainnet-validation.md`.
 
-  ### FeeRouter
+## Deferred capability development
 
-  ```bash
-  pnpm --filter @workspace/scripts run deploy
-  ```
-
-  ## Compilation constraints
-
-  ```js
-  // scripts/src/compilePaymaster.ts
-  settings: {
-    optimizer: { enabled: true, runs: 200 },
-    evmVersion: "paris",  // Arc Testnet + Fuji reject PUSH0 (Shanghai opcode)
-  }
-  ```
-
-  In `contracts/Paymaster.sol`:
-  - `entryPoint` must be `constant` (not `immutable`) — 2-immutable 0x60c0 init silently reverts on Arc/Base/Fuji
-  - No `nonReentrant` on `validatePaymasterUserOp` — ERC-7562 forbids global storage writes for unstaked paymasters
-
-  ## ERC-4337 client (permissionless v0.3.6 + viem v2.51.3)
-
-  ```typescript
-  // artifacts/arc-bridge/src/lib/aa.ts
-  const account = await toSimpleSmartAccount({
-    client: publicClient,
-    owner: walletClient,
-    entryPoint: { address: ENTRY_POINT, version: "0.7" },
-  });
-  // Smart account address is deterministic — same EOA → same address on every chain
-  ```
-
-  ## Known gotchas
-
-  | Gotcha | Detail |
-  |---|---|
-  | PUSH0 on Arc/Fuji | Always compile with `evmVersion: "paris"` |
-  | 2-immutable init revert | Keep `entryPoint` as `constant` in Paymaster.sol |
-  | ERC-7562 validation | No global storage writes in `validatePaymasterUserOp` |
-  | EntryPoint needs ETH | Run `fund-paymaster` after every deploy |
-  | Two address files | Update both `lib/paymaster.ts` AND `api-server/routes/paymaster.ts` |
-  | Arc USDC decimals | ERC-20 interface = 6 dec; native gas token = 18 dec |
-  | Sepolia RPC | Use `publicnode.com` — `rpc.sepolia.org` is unreliable |
-  | Gas vault ≠ smart acct wallet | Gas vault covers bundler fees only, not the bridge amount |
-  
+Relay, gasless, refuel, and yield code must stay inaccessible from mainnet
+runtime while it is being researched. Each requires a separate threat model,
+tests, independent review, verified deployment, and operating policy before its
+feature gate can change.

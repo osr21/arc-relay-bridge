@@ -1,24 +1,24 @@
 {
   "deployments": {
-    "43113": {
-      "address": "0x57a298356E6B2A98d44C68Ff92B7372D639684E0",
-      "apyBps": 920,
-      "vaultLabel": "Fuji Yield Vault"
-    },
-    "84532": {
-      "address": "0xDE761A1b0FC1271AF2D1682158D428Bd12DC710d",
-      "apyBps": 1230,
-      "vaultLabel": "Base Yield Vault"
-    },
     "5042002": {
-      "address": "0x9677b4BB48B552E7042619056414Fe69d2b5e204",
+      "address": "0xFf8f0Fc1Cca51ddE49ee1E7083D36CC99Af01665",
       "apyBps": 1850,
       "vaultLabel": "Arc Yield Vault"
     },
     "11155111": {
-      "address": "0xCD75dad98b3bC9bb3Bb153b623772967e77d56F1",
+      "address": "0xd4a11E7C3512A5c9C09E0296bB06490244476673",
       "apyBps": 780,
       "vaultLabel": "Sepolia Yield Vault"
+    },
+    "84532": {
+      "address": "0x0D3B7bd972F4Cc3CDAB62E1cFafcA79F8d7167f5",
+      "apyBps": 1230,
+      "vaultLabel": "Base Yield Vault"
+    },
+    "43113": {
+      "address": "0xEE39e1690F1bE07e8a68813f57cE3142197CECf6",
+      "apyBps": 920,
+      "vaultLabel": "Fuji Yield Vault"
     }
   }
 }

@@ -2,6 +2,24 @@
 
 A cross-chain USDC relay bridge built on Circle's CCTP V2, deployable to ARC Testnet. Burn USDC on a source chain and natively mint it on the destination — no wrapped tokens, no liquidity pools.
 
+## Mainnet preparation — not launched
+
+- Release scope: Arc Mainnet (5042) ↔ Base Mainnet (8453), with bridge, relay,
+  gasless and refuel. **Yield must remain disabled until a real strategy is selected.**
+- The frontend defaults to mainnet preparation, and the API defaults to the same
+  environment. Mainnet payment capabilities remain locked while deployment,
+  integration review and funding are incomplete; this is not a live bridge.
+- Explicit testnet operation uses `VITE_NETWORK_ENV=testnet` for the frontend build
+  and `ARC_NETWORK_ENV=testnet` for the API. Never mix these environments.
+- Public network parameters and launch capabilities live in the SDK mainnet
+  module. The addresses below are **testnet deployments only**; do not copy them
+  into a mainnet manifest or run the legacy `deploy-all` script for mainnet.
+- Mainnet relay requires the separate `GasRelayerV2` authenticated-hook protocol.
+  Existing testnet burns and deployed legacy contracts are not migrated.
+- Read `docs/mainnet-preflight.md` and `docs/relay-mainnet-protocol.md` before
+  continuing launch work. Preflight is read-only, does not access a key, and does
+  not authorize deployment or prove contract safety.
+
 ## Run & Operate
 
 - `pnpm --filter @workspace/arc-bridge run dev` — run the bridge frontend (reads `PORT` env)
@@ -42,9 +60,9 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 | Chain | CCTP Domain | Chain ID | minFinalityThreshold |
 |---|---|---|---|
 | Arc Testnet | 26 | 5042002 | 2000 (finalized) |
-| Ethereum Sepolia | 0 | 11155111 | 1000 (safe) |
-| Base Sepolia | 6 | 84532 | 1000 (safe) |
-| Avalanche Fuji | 1 | 43113 | 1000 (safe) |
+| Ethereum Sepolia | 0 | 11155111 | 0 (fast — testnet only) |
+| Base Sepolia | 6 | 84532 | 0 (fast — testnet only) |
+| Avalanche Fuji | 1 | 43113 | 0 (fast — testnet only) |
 
 ## Contract Addresses (same on all chains)
 
@@ -55,34 +73,66 @@ Users connect MetaMask, choose source/destination chains, enter a USDC amount, a
 - Base Sepolia USDC: `0x036CbD53842c5426634e7929541eC2318f3dCF7e`
 - Fuji USDC: `0x5425890298aed601595a70AB815c96711a31Bc65`
 
-## Paymaster Addresses (deployed 2025-05-31 v2, evmVersion paris, hardened)
+## Paymaster Addresses (deployed 2026-06-16 v6-hardened, evmVersion paris, ERC-4337 v0.7)
 
-Security hardening over v1: rescueTokens blocks USDC rescue (protects deposits), setGasRate capped at MAX_GAS_RATE (1 USDC/gas).
+v4 fix: removed `nonReentrant` from `validatePaymasterUserOp` — ERC-7562 forbids global storage writes (_locked bool) for unstaked paymasters; Pimlico rejects such UserOps at simulation. `onlyEntryPoint` is sufficient protection (EntryPoint never re-enters validation).
+v5 fix: `deductGas` now checks available (unlocked) balance only — prevents double-charging a user when a pending UserOp has reserved funds concurrently.
+v6 fix (audit): constructor now enforces `gasRate <= MAX_GAS_RATE` — previously the cap was only on `setGasRate()`.
+entryPoint is a `constant` (not immutable) — keeps single-immutable init pattern (`0x60a0`) for chain compatibility.
 
 | Chain | Address |
 |---|---|
-| Arc Testnet | `0x05FCDBf7E7b7c50929D7ccdd32000be30a796E60` |
-| Ethereum Sepolia | `0xE0b2557C27cc358C27376A96493Fa97c3EC58b31` |
-| Base Sepolia | `0x57a298356E6B2A98d44C68Ff92B7372D639684E0` |
-| Avalanche Fuji | `0x06e2AF4CD0B05B5c415fBe7Ce256be41a6D8D7F4` |
+| Arc Testnet | `0xEE39e1690F1bE07e8a68813f57cE3142197CECf6` |
+| Ethereum Sepolia | `0xe7ED22eF9Af9CAd98B048979dbd726e89dd0D417` |
+| Base Sepolia | `0x5f309aE9A9A364Ae18af77b7733bB9C43A032A4A` |
+| Avalanche Fuji | `0x0D3B7bd972F4Cc3CDAB62E1cFafcA79F8d7167f5` |
 
-Re-deploy: `pnpm --filter @workspace/scripts run deploy-paymaster`
-Constructor: `(address usdc, address relayer, address feeRecipient, uint256 gasRate)`
+Re-deploy: `pnpm --filter @workspace/scripts run deploy-all`
+Constructor: `(address usdc, address relayer, address feeRecipient, uint256 gasRate)` — 4 params; entryPoint is hardcoded constant.
 Note: must compile with `evmVersion: "paris"` — Arc Testnet and Fuji reject PUSH0 (shanghai).
+Note: 2-immutable init pattern (`0x60c0`) silently reverts on Arc/Base/Fuji — always keep entryPoint as `constant`, not `immutable`.
+Note: validatePaymasterUserOp must NOT use nonReentrant — _locked is global storage, violates ERC-7562 for unstaked paymasters.
 
-## FeeRouter v2 Addresses (deployed 2025-05-23, hardened)
+## GasRelayer Addresses (deployed 2026-06-16 v2-hardened)
 
-Security hardening over v1: immutable usdc/tokenMessenger (no caller-supplied addresses), reentrancy lock, zero mintRecipient check, rescueTokens return-value check.
+v2 fix (audit): `rescueTokens` now blocks USDC — prevents owner from draining relay float.
 
 | Chain | Address |
 |---|---|
-| Arc Testnet | `0x8256a1e1f8971448b49dA0F55b8A1BB6557eA8FC` |
-| Ethereum Sepolia | `0x5B1F511ed4dF76f369671BF1c4aCF0dD84CC0804` |
-| Base Sepolia | `0x8d4B57eD464df10414Dde3ADC2E403a01ebc50d8` |
-| Avalanche Fuji | `0x64D160b7E91e78e52dFc0e8829640E32A919164C` |
+| Arc Testnet | `0xf89773D7d9C43c01203793bf991e2550975a0C49` |
+| Ethereum Sepolia | `0x5eA2A91629245074D01EFf64fc223233c2a805E6` |
+| Base Sepolia | `0x5bE70628f49aFb90D81d169bff1533F437B967BB` |
+| Avalanche Fuji | `0x53183000a7Ae24AE9F1126271a66Eff1161a58Ec` |
+
+Re-deploy: `pnpm --filter @workspace/scripts run deploy-all`
+
+## FeeRouter Addresses (deployed 2026-06-16 v3-hardened)
+
+v2 hardening: immutable usdc/tokenMessenger (no caller-supplied addresses), reentrancy lock, zero mintRecipient check, rescueTokens return-value check.
+v3 fix (audit): two-step ownership — `transferOwnership` now sets `pendingOwner`; new `acceptOwnership()` completes the transfer. Prevents accidental permanent ownership loss.
+
+| Chain | Address |
+|---|---|
+| Arc Testnet | `0x0812a44BDB8975d1Fa1DA93726385Bc4dDC31C6A` |
+| Ethereum Sepolia | `0x9d54E104680D2C80FE117e1A66862f619F0a4cBa` |
+| Base Sepolia | `0x245aB059961D5D4A29D2fDf6AefA75b029Ed445d` |
+| Avalanche Fuji | `0xce4794207CFCCDC06B283b6942f5BB44a32F5398` |
 
 Fee recipient: `0xdb5019b8DfbccEF8906C39B16a4870082eAbBc4C`
-Re-deploy: `pnpm --filter @workspace/scripts run deploy`
+Re-deploy: `pnpm --filter @workspace/scripts run deploy-all`
+
+## YieldVault Addresses (deployed 2026-06-16 v2-hardened)
+
+v2 fix (audit): reentrancy guard on deposit/withdraw, `rescueTokens` blocks USDC, two-step ownership, zero-address guard on `transferOwnership`, `withdraw` event now emits correct (pre-delete) principal.
+
+| Chain | Address | APY |
+|---|---|---|
+| Arc Testnet | `0xFf8f0Fc1Cca51ddE49ee1E7083D36CC99Af01665` | 18.5% |
+| Ethereum Sepolia | `0xd4a11E7C3512A5c9C09E0296bB06490244476673` | 7.8% |
+| Base Sepolia | `0x0D3B7bd972F4Cc3CDAB62E1cFafcA79F8d7167f5` | 12.3% |
+| Avalanche Fuji | `0xEE39e1690F1bE07e8a68813f57cE3142197CECf6` | 9.2% |
+
+Re-deploy: `pnpm --filter @workspace/scripts run deploy-all`
 
 ## Gotchas
 

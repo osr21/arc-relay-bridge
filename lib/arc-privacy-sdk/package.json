@@ -1,0 +1,23 @@
+{
+  "name": "@workspace/arc-privacy-sdk",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Arc Privacy Sector (APS) SDK — typed stubs for pre-launch integration",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build":     "tsc --build",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript":  "~5.9.3"
+  }
+}

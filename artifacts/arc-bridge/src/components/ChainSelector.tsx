@@ -12,7 +12,9 @@ interface ChainSelectorProps {
 }
 
 const CHAIN_ICONS: Record<number, string> = {
+  5042: "⬡",
   5042002: "⬡",
+  8453: "⬟",
   11155111: "Ξ",
   84532: "⬟",
   43113: "△",

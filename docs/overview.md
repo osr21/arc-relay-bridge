@@ -1,51 +1,47 @@
-# Arc Relay Bridge — Overview
+# Architecture and product scope
 
-Arc Relay Bridge is a cross-chain USDC transfer application built on [Circle's CCTP V2](https://developers.circle.com/stablecoins/cctp-getting-started). It lets users burn native USDC on one chain and mint it natively on another — no wrapped tokens, no liquidity pools, no counterparty risk.
+Arc Relay Bridge transfers native USDC between Arc Mainnet and Base Mainnet
+using Circle CCTP V2. It is non-custodial: the application never receives or
+controls bridged funds.
 
-## How it works
+## Enabled flow
 
-```
-User on Chain A                  Circle Iris API              User on Chain B
-      │                                │                             │
-      │  1. Approve USDC               │                             │
-      │  2. depositForBurn()           │                             │
-      │──────────────────────────────► │                             │
-      │                                │  3. Issue attestation       │
-      │                                │◄────────────────────────────│
-      │  4. Poll for attestation       │                             │
-      │◄──────────────────────────────►│                             │
-      │                                │                             │
-      │  5. Switch wallet to Chain B   │                             │
-      │  6. receiveMessage()           │                             │
-      │────────────────────────────────────────────────────────────► │
-      │                                │             USDC minted ✓   │
-```
+1. Validate the route, amount, recipient, wallet chain, and destination gas.
+2. Approve Circle's TokenMessenger to spend the exact required USDC.
+3. Call the seven-parameter CCTP V2 `depositForBurn`.
+4. Persist the burn hash immediately.
+5. Read the source receipt and extract the emitted CCTP message.
+6. Poll Circle's production Iris API for the matching attested message.
+7. Verify immutable message fields and check whether its nonce was consumed.
+8. Switch to the destination network and call `receiveMessage`.
+9. Record completion and clear the resumable session.
 
-### Step by step
+The bridge uses finality threshold `2000`, `maxFee = 0`, and an unrestricted
+destination caller. It charges no application fee.
 
-1. **Approve** — The user approves the CCTP TokenMessenger contract to spend their USDC
-2. **Fee** — A 0.3% protocol fee is transferred to the fee recipient wallet on the source chain
-3. **Burn** — `depositForBurn()` is called on the source chain's TokenMessenger, destroying the USDC and emitting a cross-chain message
-4. **Attest** — Circle's Iris API monitors the source chain and signs an attestation once sufficient block finality is reached
-5. **Mint** — The bridge polls for the attestation, then calls `receiveMessage()` on the destination chain's MessageTransmitter, minting native USDC to the recipient
+## Reliability model
 
-The whole flow is non-custodial: at no point does the bridge hold user funds.
+The source-chain receipt is authoritative. A wallet may return a transaction
+hash and then fail while waiting for its receipt. When that happens, the app
+polls static source RPC providers and keeps the submitted transfer resumable.
 
-## Supported chains
+Source and Iris message bytes are not assumed to be identical. Correlation
+checks immutable fields and fails closed if no unique match exists. Resume also
+checks the attested nonce to avoid submitting a duplicate destination mint.
 
-| Chain | CCTP Domain | Chain ID |
-|---|---|---|
-| Arc Testnet | 26 | 5042002 |
-| Ethereum Sepolia | 0 | 11155111 |
-| Base Sepolia | 6 | 84532 |
-| Avalanche Fuji | 1 | 43113 |
+## Disabled products
 
-Every pair is supported bidirectionally (6 possible routes).
+Relay, gasless transactions, refuel, and yield are not part of the live bridge.
+Their historical contracts and testnet experiments must not be interpreted as
+mainnet deployments.
 
-## Protocol fee
+- Relay needs an authenticated payout design, reviewed deployment, durable
+  idempotency, and funded operations.
+- Gasless mode needs confirmed Arc Mainnet bundler support, paymaster review,
+  sponsorship policy, and funding.
+- Refuel needs durable payout reconciliation and chain-native liquidity.
+- Yield needs a real reviewed strategy. Simulated APY is never presented as a
+  mainnet investment return.
 
-A 0.3% fee is deducted from the transferred amount on the source chain before the burn. The fee is sent directly to the configured fee recipient wallet via a plain ERC-20 transfer — no smart contract required.
-
-- Fee: 0.3% (30 basis points)
-- Collected on: source chain, before burn
-- Recipient: configurable via `VITE_FEE_RECIPIENT` environment variable
+See [Mainnet validation](mainnet-validation.md) and
+[Technical reference](technical-reference.md).

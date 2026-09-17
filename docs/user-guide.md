@@ -1,92 +1,84 @@
-# User Guide
+# Mainnet user guide
 
-  ## Prerequisites
+## Before transferring
 
-  - [MetaMask](https://metamask.io) installed
-  - Testnet USDC on the source chain — [Circle Faucet](https://faucet.circle.com)
-  - For gasless bridging: USDC in your smart account wallet (see below)
+You need:
 
-  ---
+- A browser wallet such as MetaMask
+- Native USDC on the source network
+- Source-network gas for approval and burn
+- Destination-network gas for mint
 
-  ## Standard bridge
+Arc uses USDC for native gas. Base uses ETH for gas. The bridge checks the
+destination reserve before allowing the burn, but you should verify both
+balances yourself.
 
-  1. **Connect wallet** — click "Connect Wallet", approve in MetaMask.
-  2. **Select source chain** — where your USDC currently is.
-  3. **Select destination chain** — where you want USDC to arrive.
-  4. **Enter amount** — or click MAX.
-  5. **Click Bridge** — MetaMask prompts for two txs:
-     - **Approve** — allow TokenMessenger to spend USDC
-     - **Burn** — `depositForBurn` on source chain
-  6. **Wait for attestation** — Circle Iris confirms the burn (~1–5 min).
-  7. **Switch network** — MetaMask switches to destination automatically.
-  8. **Mint** — `receiveMessage` mints USDC natively on destination.
+This bridge moves real funds. Confirm that the selected networks are Arc Mainnet
+and Base Mainnet and review every wallet prompt.
 
-  ### Gasless relay (optional, 1 USDC fee)
+## Transfer steps
 
-  Toggle "Gasless relay" to skip the manual network-switch and mint step. A relayer pays destination gas and deducts 1 USDC from the bridged amount. Useful when you have no ETH/AVAX on the destination.
+1. Connect the wallet that holds the source USDC.
+2. Select Arc or Base as the source; the other becomes the destination.
+3. Enter an amount and, if needed, a custom recipient.
+4. Review the route and destination gas check.
+5. Approve Circle's TokenMessenger to spend the required USDC.
+6. Confirm the CCTP burn transaction.
+7. Wait while Circle produces the production attestation.
+8. Switch to the destination network when prompted.
+9. Confirm the CCTP mint transaction.
 
-  ---
+The enabled bridge charges no application fee. Wallet gas costs still apply.
 
-  ## ERC-4337 gasless bridge (no ETH or AVAX needed on source)
+## If an error appears after burn
 
-  Gasless bridging replaces native gas with USDC deducted from a pre-funded Paymaster vault.
+If the app displays a burn transaction hash, **do not start another transfer**.
+A wallet RPC can fail after it has already broadcast the transaction.
 
-  ### Two separate USDC pools
+1. Save the burn transaction hash.
+2. Reload the app and connect the same wallet.
+3. Choose **Resume submitted transfer**.
+4. Let the app retrieve the authoritative source receipt.
+5. Complete the destination mint when prompted.
 
-  > **Important:** The smart account has two separate USDC balances. Confusing them is the #1 source of "Insufficient USDC" errors.
+Resume also checks whether the CCTP nonce was already consumed. This lets it
+recognize an existing mint instead of creating a duplicate destination action.
 
-  | Pool | What it pays for | Where to see it |
-  |---|---|---|
-  | **Smart account wallet** | The USDC being bridged (burned) | Bridge page → "Smart account wallet" label |
-  | **Paymaster gas vault** | Bundler gas fees (~0.5–2 USDC per bridge) | Paymaster page → chain card |
+## Transaction stages
 
-  The gas vault **cannot** be used for the bridge amount. A 17 USDC gas vault doesn't let you bridge 17 USDC — you need USDC in the smart account wallet too.
+| Stage | Meaning |
+|---|---|
+| Approve | Authorizes Circle's TokenMessenger to spend the required source USDC |
+| Burn | Destroys source USDC and emits the CCTP cross-chain message |
+| Attest | Circle Iris verifies finality and signs the message |
+| Mint | Destination MessageTransmitter verifies the message and mints native USDC |
 
-  ### One-time setup per chain
+Once a burn is confirmed, the operation completes through destination minting;
+the source burn is not reversed.
 
-  **1. Connect wallet**
-  Your SimpleAccount address is deterministically derived from your MetaMask EOA — same address on every chain. Find it on the Paymaster page.
+## Add USDC to the wallet
 
-  **2. Fund the smart account wallet**
-  Send USDC from MetaMask to the SimpleAccount address. This is a regular ERC-20 transfer that costs a tiny amount of native gas — done only once.
+If destination USDC is not displayed automatically, use the app's **Add USDC to
+wallet** action or import the correct six-decimal token:
 
-  **3. Deposit USDC to the gas vault**
-  On the Paymaster page → select chain → enter amount → Deposit. Pimlico sponsors this UserOp; no native gas needed.
+- Arc: `0x3600000000000000000000000000000000000000`
+- Base: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`
 
-  ### Bridging gaslessly
+## Disabled services
 
-  1. Go to Bridge page → toggle **ERC-4337 gasless burn** (Beta).
-  2. FROM section shows **"Smart account wallet: X USDC"** — this is your bridgeable balance.
-  3. Enter amount ≤ smart account wallet balance.
-  4. Click Bridge → MetaMask shows a UserOperation signature (no gas fee prompt).
-  5. Wait for attestation, then sign the mint on destination as normal.
+Relay, ERC-4337 gasless mode, refuel, and yield are not available in the
+mainnet application. There is no testnet switch.
 
-  ### Current balances (as of 2026-06-03)
+## Troubleshooting
 
-  | Chain | Smart acct wallet | Gas vault | Can bridge? |
-  |---|---|---|---|
-  | Ethereum Sepolia | ~20 USDC | ~17 USDC | ✅ |
-  | Avalanche Fuji | ~6 USDC | ~17 USDC | ✅ |
-  | Base Sepolia | ~25 USDC | **0 USDC** | ❌ needs gas vault deposit |
+| Problem | Action |
+|---|---|
+| Balance is zero | Confirm the connected account and network, then refresh |
+| Approval or burn fails without a burn hash | Check source USDC and gas, then retry |
+| Error appears with a burn hash | Do not reburn; reload and resume the submitted transfer |
+| Attestation takes longer than expected | Check the burn receipt and continue waiting or resume later |
+| Mint cannot start | Add destination gas and resume |
+| USDC is not visible after mint | Import the destination USDC token or use the in-app action |
 
-  ---
-
-  ## Resuming an interrupted bridge
-
-  If the browser closed after a successful burn but before mint:
-
-  1. The Bridge page shows a **Resume** button automatically (session is saved locally).
-  2. Or paste the burn tx hash into the Resume field and click Resume.
-
-  ---
-
-  ## Troubleshooting
-
-  | Error | Cause | Fix |
-  |---|---|---|
-  | "Insufficient USDC in your smart account" | Smart account wallet has less USDC than entered | Send USDC to smart account wallet |
-  | "Insufficient Paymaster balance" | Gas vault < 1.8 USDC | Deposit USDC via Paymaster page |
-  | `AA31 paymaster deposit too low` | Paymaster has no ETH at EntryPoint | Admin must run fund-paymaster script |
-  | Attestation timeout | Circle Iris slow or chain finality delayed | Use Resume after burn tx appears on-chain |
-  | Wrong network after mint | MetaMask didn't switch | Switch network manually |
-  
+For verified network and contract addresses, see the
+[Technical reference](technical-reference.md).

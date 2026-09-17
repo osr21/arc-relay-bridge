@@ -1,8 +1,9 @@
 import { Router, type IRouter } from "express";
+import { MAINNET_IRIS_API } from "@workspace/arc-relay-sdk/mainnet";
 
 const router: IRouter = Router();
 
-const IRIS_API = "https://iris-api-sandbox.circle.com";
+const irisApi = () => MAINNET_IRIS_API;
 
 type AttestationMessage = {
   attestation?: string;
@@ -50,14 +51,22 @@ router.get("/attest", async (req, res) => {
     return;
   }
 
+  if (domain !== "26" && domain !== "6") {
+    res.status(400).json({
+      error: "Mainnet attestations only support Arc (26) and Base (6) source domains",
+      code: "MAINNET_SOURCE_DOMAIN_NOT_ALLOWED",
+    });
+    return;
+  }
+
   if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) {
     res.status(400).json({ error: "Invalid txHash — must be a 0x-prefixed 32-byte hex string" });
     return;
   }
 
+  const iris = irisApi();
   const endpoints = [
-    { label: "v2", url: `${IRIS_API}/v2/messages/${domain}?transactionHash=${txHash}` },
-    { label: "v1", url: `${IRIS_API}/v1/messages/${domain}/${txHash}` },
+    { label: "v2", url: `${iris}/v2/messages/${domain}?transactionHash=${txHash}` },
   ];
 
   const diagnostics: string[] = [];
@@ -87,48 +96,6 @@ router.get("/attest", async (req, res) => {
   }
 
   res.json({ messages: [], diagnostic: diagnostics.join(" | ") });
-});
-
-/**
- * GET /api/attest/hash/:messageHash
- *
- * Queries Circle's Iris API by message hash — keccak256(messageBytes).
- * This is the content-based endpoint that works regardless of source chain.
- * Returns { attestation, status, diagnostic }.
- */
-router.get("/attest/hash/:messageHash", async (req, res) => {
-  const { messageHash } = req.params;
-
-  if (!messageHash || !/^0x[0-9a-fA-F]{64}$/.test(messageHash)) {
-    res.status(400).json({ error: "Invalid messageHash — must be 0x-prefixed 32-byte hex" });
-    return;
-  }
-
-  const url = `${IRIS_API}/v1/attestations/${messageHash}`;
-
-  try {
-    const { ok, body, status } = await upstreamGet(url);
-
-    if (!ok) {
-      res.json({ attestation: null, status: null, diagnostic: extractDetail(body, status) });
-      return;
-    }
-
-    let data: { attestation?: string; status?: string } = {};
-    try { data = JSON.parse(body); } catch {
-      res.json({ attestation: null, status: null, diagnostic: "invalid JSON from upstream" });
-      return;
-    }
-
-    res.json({
-      attestation: data.attestation ?? null,
-      status: data.status ?? null,
-      diagnostic: "",
-    });
-  } catch (e) {
-    const detail = e instanceof Error ? e.message.slice(0, 80) : String(e).slice(0, 80);
-    res.json({ attestation: null, status: null, diagnostic: detail });
-  }
 });
 
 export default router;

@@ -75,6 +75,9 @@
     "zod": "catalog:"
   },
   "dependencies": {
-    "ethers": "^6.16.0"
+    "@workspace/arc-relay-sdk": "workspace:*",
+    "ethers": "^6.16.0",
+    "permissionless": "^0.3.6",
+    "viem": "^2.51.3"
   }
 }

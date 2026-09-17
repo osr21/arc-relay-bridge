@@ -1,22 +1,25 @@
-import { Switch, Route, Router as WouterRouter } from "wouter";
+import { Router as WouterRouter, useLocation } from "wouter";
 import BridgePage from "@/pages/BridgePage";
-import YieldPage  from "@/pages/YieldPage";
-import NotFound   from "@/pages/not-found";
+import MainnetPreparationPage from "@/pages/MainnetPreparationPage";
 
-function Router() {
-  return (
-    <Switch>
-      <Route path="/"      component={BridgePage} />
-      <Route path="/yield" component={YieldPage}  />
-      <Route component={NotFound} />
-    </Switch>
-  );
+function MainnetRouter() {
+  const [location] = useLocation();
+  if (location === "/" || location === "") return <BridgePage />;
+  return <MainnetPreparationPage area={
+      location.endsWith("/yield") ? "yield" :
+      location.endsWith("/paymaster") ? "paymaster" :
+      location.endsWith("/refuel") ? "refuel" :
+      location.endsWith("/portfolio") ? "portfolio" :
+      location.endsWith("/ecosystem") ? "ecosystem" :
+      location.endsWith("/developers") ? "developers" :
+      "bridge"
+    } />;
 }
 
 function App() {
   return (
     <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-      <Router />
+      <MainnetRouter />
     </WouterRouter>
   );
 }

@@ -1,156 +1,126 @@
-# Arc Relay Bridge
+# Arc ↔ Base CCTP V2 Bridge
 
-  A cross-chain USDC bridge built on [Circle's CCTP V2](https://developers.circle.com/stablecoins/cctp-getting-started), deployable to Arc Testnet. Burn USDC on a source chain and natively mint it on the destination — no wrapped tokens, no liquidity pools.
+An open-source, non-custodial reference implementation for transferring native
+USDC between **Arc Mainnet** and **Base Mainnet** with Circle CCTP V2.
 
-  [![Live App](https://img.shields.io/badge/Live%20App-arc--relay--bridge.replit.app-blue)](https://arc-relay-bridge.replit.app)
+The standard bridge is live and mainnet-only. Relay, gasless, refuel, and yield
+features are intentionally disabled until their separate security and operational
+requirements are complete.
 
-  ---
+> **Mainnet software:** Transactions move real USDC and require source-chain gas
+> plus destination-chain gas for minting. This project has not received an
+> independent security audit. Verify all addresses against Circle and Arc's
+> official documentation before using or modifying it.
 
-  ## Features
+## Live scope
 
-  - **Native USDC bridging** via Circle CCTP V2 — 1:1, no slippage, no wrapped tokens
-  - **ERC-4337 gasless burn** (Beta) — bridge without native tokens using our USDC Paymaster
-  - **Gasless mint relay** — skip the wallet-switch step on arrival for a 1 USDC relay fee
-  - **4-step progress UI** — Approve → Burn → Attest → Mint with real-time status
-  - **Session resume** — interrupted bridges can be resumed from the burn transaction hash
-  - **Multi-chain** — Arc Testnet ↔ Ethereum Sepolia, Base Sepolia, Avalanche Fuji
+| Capability | Status |
+|---|---|
+| Standard Arc ↔ Base CCTP V2 bridge | Enabled |
+| Resumable burn, attestation, and mint | Enabled |
+| Relay | Disabled pending reviewed deployment and durable payout processing |
+| ERC-4337 gasless mode | Disabled pending provider support and paymaster review |
+| Gas refuel | Disabled pending payout verification and funded liquidity |
+| Yield | Disabled until a real strategy is selected |
+| Testnet runtime | Removed |
 
-  ---
+No application fee is charged by the enabled bridge.
 
-  ## Supported Chains
+## Supported networks
 
-  | Chain | CCTP Domain | Chain ID | minFinalityThreshold |
-  |---|---|---|---|
-  | Arc Testnet | 26 | 5042002 | 2000 (finalized) |
-  | Ethereum Sepolia | 0 | 11155111 | 1000 (safe, ~1–3 min) |
-  | Base Sepolia | 6 | 84532 | 1000 (safe, ~1–3 min) |
-  | Avalanche Fuji | 1 | 43113 | 1000 (safe, ~1–3 min) |
+| Network | Chain ID | CCTP domain | Native USDC |
+|---|---:|---:|---|
+| Arc Mainnet | `5042` | `26` | `0x3600000000000000000000000000000000000000` |
+| Base Mainnet | `8453` | `6` | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 
-  ---
+Circle CCTP V2 mainnet contracts used on both networks:
 
-  ## Contract Addresses
+| Contract | Address |
+|---|---|
+| TokenMessenger | `0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d` |
+| MessageTransmitter | `0x81D40F21F12A8F0E3252Bccb954D722d4c464B64` |
 
-  > All CCTP V2 contracts are deployed at the **same address on every chain**.
+Production attestations use `https://iris-api.circle.com`.
 
-  | Contract | Address |
-  |---|---|
-  | TokenMessenger (CCTP V2) | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` |
-  | MessageTransmitter (CCTP V2) | `0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275` |
+## Transfer lifecycle
 
-  | Chain | USDC Address |
-  |---|---|
-  | Arc Testnet | `0x3600000000000000000000000000000000000000` |
-  | Ethereum Sepolia | `0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238` |
-  | Base Sepolia | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` |
-  | Avalanche Fuji | `0x5425890298aed601595a70AB815c96711a31Bc65` |
+```mermaid
+sequenceDiagram
+    participant User
+    participant Source as Source TokenMessenger
+    participant Iris as Circle Iris
+    participant Destination as Destination MessageTransmitter
 
-  ### Paymaster v5 (ERC-4337 v0.7)
+    User->>Source: approve USDC
+    User->>Source: depositForBurn (CCTP V2)
+    Source-->>User: burn transaction receipt + MessageSent
+    User->>Iris: poll production attestation API
+    Iris-->>User: message + attestation
+    User->>Destination: receiveMessage
+    Destination-->>User: native USDC minted
+```
 
-  Deployed 2026-06-01. Compiled with `evmVersion: "paris"` for Arc/Fuji compatibility.
+The app persists an in-progress session as soon as a burn hash exists. If the
+wallet RPC fails after broadcasting, the app checks the authoritative source
+RPC and resumes that transfer instead of inviting a duplicate burn.
 
-  | Chain | Address |
-  |---|---|
-  | Arc Testnet | `0xfD06D288d481515a986DF28030AF013De290D76C` |
-  | Ethereum Sepolia | `0xC9E9ba0bfE58FA438B8B6f2182d3ADA3669F9Eb4` |
-  | Base Sepolia | `0xe355E9dCdEAB37eA8fd81b9457Ad2C56d3eE9055` |
-  | Avalanche Fuji | `0x7C75A75B59b63871e1Bb47fA63e541F0e5975f93` |
+## Mainnet verification
 
-  ### FeeRouter v2
+A real `0.10 USDC` Arc → Base → Arc canary completed successfully:
 
-  Deployed 2026-05-23. Hardened: immutable addresses, reentrancy lock, zero-recipient guard.
+| Stage | Transaction |
+|---|---|
+| Arc burn | [`0x987b…31be`](https://explorer.arc.io/tx/0x987bf10c253fbbe4f47b7b25d36cff4bc0f534f01514aebaee78faf5034e31be) |
+| Base mint | [`0x1878…6462`](https://basescan.org/tx/0x187802da8e2326eeabc93d1e8e013c7e8fcf6f74cc1bcf33e0a7ff05d3f36462) |
+| Base burn | [`0x2e48…19d`](https://basescan.org/tx/0x2e488fdc6614a9fff0921dc02fd9c701290a6bb6b397ffdf14a1dc4cd825c19d) |
+| Arc mint | [`0x59cc…bc23`](https://explorer.arc.io/tx/0x59cc578c955a3b7f32e9d985f2e3970d1b2a38d4d8dee4f6f435fd4ed4adbc23) |
 
-  | Chain | Address |
-  |---|---|
-  | Arc Testnet | `0x8256a1e1f8971448b49dA0F55b8A1BB6557eA8FC` |
-  | Ethereum Sepolia | `0x5B1F511ed4dF76f369671BF1c4aCF0dD84CC0804` |
-  | Base Sepolia | `0x8d4B57eD464df10414Dde3ADC2E403a01ebc50d8` |
-  | Avalanche Fuji | `0x64D160b7E91e78e52dFc0e8829640E32A919164C` |
+See [Mainnet validation](docs/mainnet-validation.md) for the tested parameters,
+recovery guarantees, and limitations.
 
-  ---
+## Run locally
 
-  ## Quick Start
+Requirements: Node.js 20+ and pnpm 10+.
 
-  ```bash
-  pnpm install
-  pnpm --filter @workspace/arc-bridge run dev   # bridge frontend
-  pnpm run typecheck                             # full typecheck
-  pnpm run build                                 # build all packages
-  ```
+```bash
+git clone https://github.com/osr21/arc-relay-bridge.git
+cd arc-relay-bridge
+pnpm install
+pnpm --filter @workspace/arc-bridge run dev
+```
 
-  ---
+The standard browser bridge does not need a deployer key, API key, or backend
+signer. Optional server and contract-development variables are documented in
+`.env.example`; real values must remain in secret storage.
 
-  ## Architecture
+```bash
+pnpm --filter @workspace/arc-bridge run typecheck
+pnpm --filter @workspace/scripts exec tsx --test \
+  ../artifacts/arc-bridge/src/lib/bridge.mainnet.test.ts
+```
 
-  The bridge is **frontend-only** — all logic runs client-side via ethers.js + MetaMask.
+## Documentation
 
-  ```
-  User EOA (MetaMask)
-      │
-      ├─ Standard bridge
-      │     └─ approve → depositForBurn → poll Iris API → receiveMessage
-      │
-      └─ ERC-4337 gasless
-            ├─ Smart account (SimpleAccount, same address on every chain)
-            │     └─ approve + depositForBurn (batched UserOp)
-            ├─ Paymaster gas vault (USDC replaces native tokens for gas)
-            └─ Pimlico bundler → EntryPoint v0.7
-  ```
+- [Architecture and product scope](docs/overview.md)
+- [Mainnet validation](docs/mainnet-validation.md)
+- [Technical reference](docs/technical-reference.md)
+- [Development guide](docs/development.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Deferred relay protocol](docs/relay-mainnet-protocol.md)
 
-  ### Key decisions
+Testnet contracts and experiments may remain in the repository for historical
+development work, but they are not imported by the mainnet runtime and are not
+part of this release.
 
-  - **CCTP V2 only** — 7-param `depositForBurn` (selector `0x8e0250ee`). V1 selector reverts.
-  - **Arc USDC uses 6 decimals** via ERC-20 interface (native representation is 18 dec for gas only).
-  - **Gasless USDC source** — the smart account's own wallet. The Paymaster gas vault covers gas fees only, not the bridge amount.
-  - **`entryPoint` is `constant`** — keeps single-slot `0x60a0` init; 2-immutable `0x60c0` silently reverts on Arc/Base/Fuji.
-  - **No `nonReentrant` on `validatePaymasterUserOp`** — ERC-7562 forbids global storage writes for unstaked paymasters.
+## Official references
 
-  ---
+- [Connect to Arc](https://docs.arc.io/arc/references/connect-to-arc)
+- [Circle CCTP contract addresses](https://developers.circle.com/cctp/references/contract-addresses)
+- [Circle USDC addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses)
+- [Circle CCTP overview](https://developers.circle.com/cctp)
+- [Base network information](https://docs.base.org/get-started/connect-to-base)
 
-  ## Stack
+## License
 
-  | Layer | Technology |
-  |---|---|
-  | Frontend | React 19 + Vite + Tailwind CSS + shadcn/ui |
-  | Web3 | ethers.js v6 |
-  | ERC-4337 | permissionless v0.3.6 + viem v2.51.3 |
-  | Bundler | Pimlico (testnet) |
-  | Protocol | Circle CCTP V2 |
-  | Attestation | Circle Iris API (sandbox) |
-  | Monorepo | pnpm workspaces + Node.js 24 + TypeScript 5.9 |
-
-  ---
-
-  ## Documentation
-
-  | File | Description |
-  |---|---|
-  | [Overview](docs/overview.md) | Product overview and bridge flow |
-  | [User Guide](docs/user-guide.md) | Step-by-step usage and ERC-4337 setup |
-  | [Paymaster](docs/paymaster.md) | Paymaster architecture, flow, deployment |
-  | [Technical Reference](docs/technical-reference.md) | Addresses, ABIs, RPCs |
-  | [Development](docs/development.md) | Local setup, scripts, gotchas |
-  | [Changelog](CHANGELOG.md) | Release history and bug fixes |
-
-  ---
-
-  ## Known Gotchas
-
-  - **ALL chains use CCTP V2** — V1 4-param selector will revert.
-  - **Arc USDC** is a special system address — always use ERC-20 interface (6 dec).
-  - **Arc explorer**: `https://testnet.arcscan.app` — previous URLs are dead.
-  - **Sepolia RPC**: use `publicnode.com` — `rpc.sepolia.org` is unreliable.
-  - **Paymaster gas vault ≠ smart account wallet** — the vault covers gas, not the bridge amount.
-  - **Base Sepolia gasless** needs a one-time gas vault deposit before first bridge.
-
-  ---
-
-  ## Links
-
-  - [Circle Faucet (testnet USDC)](https://faucet.circle.com)
-  - [Arc Docs](https://docs.arc.io)
-  - [CCTP Docs](https://developers.circle.com/stablecoins/cctp-getting-started)
-  - [Arc Testnet Explorer](https://testnet.arcscan.app)
-  - [Sepolia Etherscan](https://sepolia.etherscan.io)
-  - [Base Sepolia Explorer](https://sepolia.basescan.org)
-  - [Fuji Explorer](https://testnet.snowtrace.io)
-  
+Apache-2.0. See [LICENSE](LICENSE).

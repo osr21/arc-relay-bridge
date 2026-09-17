@@ -1,0 +1,17 @@
+{
+  "snapshotType": "deferred-service-preflight",
+  "supersededForStandardBridge": true,
+  "standardBridge": {
+    "networks": ["Arc Mainnet", "Base Mainnet"],
+    "status": "live",
+    "validationDocument": "docs/mainnet-validation.md"
+  },
+  "deferredCapabilitiesReady": false,
+  "deferredCapabilities": {
+    "relay": "disabled",
+    "gasless": "disabled",
+    "refuel": "disabled",
+    "yield": "disabled"
+  },
+  "notice": "This sanitized public snapshot is not an audit, deployment approval, or live balance report."
+}

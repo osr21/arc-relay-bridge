@@ -22,4 +22,6 @@ app.listen(port, (err) => {
   }
 
   logger.info({ port }, "Server listening");
+
+  logger.info("indexer: disabled in mainnet-only profile");
 });

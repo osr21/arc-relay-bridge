@@ -8,6 +8,7 @@
 import { ethers } from "ethers";
 import { ChainConfig, CHAINS } from "./chains";
 import { getProvider, switchToChain, friendlyError } from "./bridge";
+import { assertFeatureAvailable, IS_MAINNET } from "./network";
 
 export const VAULT_ABI = [
   "function apyBps() view returns (uint256)",
@@ -32,10 +33,10 @@ export const USDC_APPROVE_ABI = [
  * Updated after deployment — keyed by chain ID.
  */
 export const VAULT_ADDRESSES: Record<number, string> = {
-  5042002:  "0x9677b4BB48B552E7042619056414Fe69d2b5e204", // Arc Testnet       — 18.5% APY
-  11155111: "0xCD75dad98b3bC9bb3Bb153b623772967e77d56F1", // Ethereum Sepolia  —  7.8% APY
-  84532:    "0xDE761A1b0FC1271AF2D1682158D428Bd12DC710d", // Base Sepolia      — 12.3% APY
-  43113:    "0x57a298356E6B2A98d44C68Ff92B7372D639684E0", // Avalanche Fuji    —  9.2% APY
+  5042002:  "0xFf8f0Fc1Cca51ddE49ee1E7083D36CC99Af01665", // Arc Testnet       — 18.5% APY (v2-hardened)
+  11155111: "0xd4a11E7C3512A5c9C09E0296bB06490244476673", // Ethereum Sepolia  —  7.8% APY (v2-hardened)
+  84532:    "0x0D3B7bd972F4Cc3CDAB62E1cFafcA79F8d7167f5", // Base Sepolia      — 12.3% APY (v2-hardened)
+  43113:    "0xEE39e1690F1bE07e8a68813f57cE3142197CECf6", // Avalanche Fuji    —  9.2% APY (v2-hardened)
 };
 
 export interface VaultRate {
@@ -58,6 +59,7 @@ export interface VaultPosition {
 
 /** Whether a vault address has been deployed (not a placeholder). */
 export function isVaultDeployed(chainId: number): boolean {
+  if (IS_MAINNET) return false;
   const addr = VAULT_ADDRESSES[chainId];
   return !!addr && !addr.startsWith("PLACEHOLDER");
 }
@@ -79,6 +81,7 @@ export function fmtApy(bps: number): string {
  * Uses the API server for batched reads (avoids browser CORS).
  */
 export async function fetchAllRates(): Promise<VaultRate[]> {
+  if (IS_MAINNET) return [];
   const res  = await fetch("/api/yield/rates");
   const data = await res.json() as {
     vaults: Array<{
@@ -114,6 +117,7 @@ export async function fetchPosition(
   chain: ChainConfig,
   userAddress: string
 ): Promise<VaultPosition | null> {
+  if (IS_MAINNET) return null;
   const vaultAddress = VAULT_ADDRESSES[chain.id];
   if (!vaultAddress || vaultAddress.startsWith("PLACEHOLDER")) return null;
 
@@ -178,6 +182,7 @@ export async function depositToVault(
   amountUnits: bigint,
   onStatus: (s: DepositStatus) => void
 ): Promise<string> {
+  assertFeatureAvailable("yield");
   const vaultAddress = VAULT_ADDRESSES[chain.id];
   if (!vaultAddress || vaultAddress.startsWith("PLACEHOLDER")) {
     throw new Error(`YieldVault not deployed on ${chain.name}`);
@@ -219,6 +224,7 @@ export async function withdrawFromVault(
   chain: ChainConfig,
   onStatus: (s: DepositStatus) => void
 ): Promise<{ txHash: string; received: bigint }> {
+  assertFeatureAvailable("yield");
   const vaultAddress = VAULT_ADDRESSES[chain.id];
   if (!vaultAddress || vaultAddress.startsWith("PLACEHOLDER")) {
     throw new Error(`YieldVault not deployed on ${chain.name}`);

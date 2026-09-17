@@ -75,6 +75,14 @@ onlyBuiltDependencies:
   - unrs-resolver
 
 overrides:
+  # ── Security patches (force vulnerable transitive deps to safe versions) ──
+  # qs <6.15.2: CVE-2026-8723 — DoS via stringify crash on null/undefined in comma arrays
+  qs: ">=6.15.2"
+  # tmp <0.2.4: CVE-2025-54798 — path traversal via symlink dir parameter
+  tmp: ">=0.2.4"
+  # ws <8.20.1: GHSA-58qx-3vcg-4xpx — uninitialized memory disclosure in HTTP upgrade headers
+  ws: ">=8.20.1"
+
   # replit uses linux-x64 only, we can exclude all other platforms
   "esbuild>@esbuild/darwin-arm64": "-"
   "esbuild>@esbuild/darwin-x64": "-"

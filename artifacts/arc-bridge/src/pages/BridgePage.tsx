@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ArrowDownUp, Info, RefreshCw, ExternalLink, Zap, RotateCcw } from "lucide-react";
+import { ArrowDownUp, Info, RefreshCw, ExternalLink, Zap, RotateCcw, Clock, ChevronDown, ChevronUp } from "lucide-react";
 import { CHAINS, ChainConfig, getChainById } from "@/lib/chains";
 import {
   BridgeStatus,
@@ -14,14 +14,16 @@ import {
   addUsdcToWallet,
   GAS_RELAY_FEE_UNITS,
 } from "@/lib/bridge";
-import { calculateFee, formatUsdc, FEE_BPS, isFeeActive } from "@/lib/config";
+import { formatUsdc } from "@/lib/config";
 import { BridgeSession, saveSession, loadSession, clearSession } from "@/lib/session";
+import { BridgeHistoryEntry, saveBridgeHistory, loadBridgeHistory } from "@/lib/history";
 import { WalletButton } from "@/components/WalletButton";
 import { ChainSelector } from "@/components/ChainSelector";
 import { StepProgress } from "@/components/StepProgress";
 import { TxLink } from "@/components/TxLink";
 import { cn } from "@/lib/utils";
 import { ethers } from "ethers";
+import { isAASupported } from "@/lib/aa";
 
 function safeParseBalance(balance: string): number | null {
   const n = parseFloat(balance);
@@ -29,19 +31,27 @@ function safeParseBalance(balance: string): number | null {
 }
 
 export default function BridgePage() {
-  const [fromChain, setFromChain] = useState<ChainConfig>(CHAINS.ETH_SEPOLIA);
-  const [toChain, setToChain]     = useState<ChainConfig>(CHAINS.ARC_TESTNET);
+  const [fromChain, setFromChain] = useState<ChainConfig>(CHAINS.ARC_MAINNET);
+  const [toChain, setToChain]     = useState<ChainConfig>(CHAINS.BASE_MAINNET);
   const [amount, setAmount]       = useState("");
   const [recipient, setRecipient] = useState("");
   const [useCustomRecipient, setUseCustomRecipient] = useState(false);
-  const [useGasRelay, setUseGasRelay] = useState(false);
+  const useGasRelay = false;
+  const setUseGasRelay = (_value: boolean) => undefined;
+  const useGasless = false;
+  const setUseGasless = (_value: boolean) => undefined;
+  const saWalletBalance = "—";
+  const saAddress: string | null = null;
+  const saAddressCopied = false;
+  const setSaAddressCopied = (_value: boolean) => undefined;
+  const saPaymasterBalance: bigint | null = null;
+  const saEntryPointDeposit: bigint | null = null;
 
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [walletChainId, setWalletChainId] = useState<number | null>(null);
   const [fromBalance, setFromBalance]     = useState<string>("—");
   const [toBalance, setToBalance]         = useState<string>("—");
   const [loadingBalances, setLoadingBalances] = useState(false);
-  const [oraclePrice, setOraclePrice]     = useState<string | null>(null);
 
   const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>({
     step: "idle",
@@ -49,10 +59,22 @@ export default function BridgePage() {
   });
   const [resumeSession, setResumeSession] = useState<BridgeSession | null>(null);
 
-  const currentStepRef  = useRef<ActiveStep | null>(null);
-  const lastBurnTxRef   = useRef<string | undefined>(undefined);
-  const lastFeeTxRef    = useRef<string | undefined>(undefined);
-  const lastMintTxRef   = useRef<string | undefined>(undefined);
+  const currentStepRef     = useRef<ActiveStep | null>(null);
+  const lastBurnTxRef      = useRef<string | undefined>(undefined);
+  const lastFeeTxRef       = useRef<string | undefined>(undefined);
+  const lastMintTxRef      = useRef<string | undefined>(undefined);
+  const attestingStartRef  = useRef<number | null>(null);
+
+  const [attestElapsed, setAttestElapsed] = useState(0);
+  const [arcNoticeDismissed, setArcNoticeDismissed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("arc-usdc-two-rows-notice-dismissed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [history, setHistory]             = useState<BridgeHistoryEntry[]>(() => loadBridgeHistory());
+  const [showHistory, setShowHistory]     = useState(false);
 
   function handleWalletConnect(addr: string, chainId: number) {
     setWalletAddress(addr);
@@ -74,6 +96,20 @@ export default function BridgePage() {
 
   useEffect(() => { refreshBalances(); }, [refreshBalances]);
 
+
+  // Pre-select source chain from URL param (?from=chainId) — used by Portfolio "Bridge to Arc" links
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const fromParam = params.get("from");
+    if (fromParam) {
+      const chain = getChainById(parseInt(fromParam, 10));
+      if (chain && chain.id !== CHAINS.ARC_MAINNET.id) {
+        setFromChain(chain);
+        setToChain(CHAINS.ARC_MAINNET);
+      }
+    }
+  }, []);
+
   // Load any saved bridge session on mount
   useEffect(() => {
     const session = loadSession();
@@ -83,21 +119,6 @@ export default function BridgePage() {
       if (from && to) setResumeSession(session);
       else clearSession();
     }
-  }, []);
-
-  // Poll Band Protocol oracle price (Arc Testnet) every 30 seconds
-  useEffect(() => {
-    async function fetchOraclePrice() {
-      try {
-        const res = await fetch("/api/oracle/price");
-        if (!res.ok) return;
-        const data = await res.json() as { rateFormatted: string };
-        if (data.rateFormatted) setOraclePrice(`$${data.rateFormatted}`);
-      } catch { /* non-fatal */ }
-    }
-    void fetchOraclePrice();
-    const interval = setInterval(fetchOraclePrice, 30_000);
-    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -126,6 +147,21 @@ export default function BridgePage() {
     };
   }, []);
 
+
+  // Attestation elapsed timer — counts up every second while waiting for Circle Iris
+  useEffect(() => {
+    if (bridgeStatus.step === "attesting") {
+      if (!attestingStartRef.current) attestingStartRef.current = Date.now();
+      const id = setInterval(() => {
+        setAttestElapsed(Math.floor((Date.now() - (attestingStartRef.current ?? Date.now())) / 1000));
+      }, 1000);
+      return () => clearInterval(id);
+    }
+    attestingStartRef.current = null;
+    setAttestElapsed(0);
+    return undefined;
+  }, [bridgeStatus.step]);
+
   function swapChains() {
     setFromChain(toChain);
     setToChain(fromChain);
@@ -137,6 +173,15 @@ export default function BridgePage() {
     walletAddress !== null &&
     walletChainId !== null &&
     walletChainId !== fromChain.id;
+
+  function handleDismissArcNotice() {
+    setArcNoticeDismissed(true);
+    try {
+      localStorage.setItem("arc-usdc-two-rows-notice-dismissed", "1");
+    } catch {
+      // localStorage unavailable — dismissal only lasts for this session
+    }
+  }
 
   async function handleSwitchNetwork() {
     try {
@@ -169,38 +214,57 @@ export default function BridgePage() {
     lastFeeTxRef.current   = undefined;
     setBridgeStatus({ step: "approving", message: "Starting bridge..." });
 
+    const trackStatus = (status: BridgeStatus) => {
+      setBridgeStatus(status);
+      if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
+      if (status.feeTxHash)  lastFeeTxRef.current   = status.feeTxHash;
+      if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
+      if (
+        status.step === "approving"  ||
+        status.step === "collecting" ||
+        status.step === "burning"    ||
+        status.step === "attesting"  ||
+        status.step === "minting"
+      ) {
+        currentStepRef.current = status.step;
+      }
+      if ((status.step === "burning" || status.step === "attesting" || status.step === "minting") && status.burnTxHash) {
+        let amountUnits = "0";
+        try { amountUnits = ethers.parseUnits(amount.trim(), 6).toString(); } catch { /* validation follows */ }
+        saveSession({
+          burnTxHash:   status.burnTxHash,
+          feeTxHash:    status.feeTxHash,
+          messageBytes: status.messageBytes,
+          messageHash: status.messageBytes ? ethers.keccak256(status.messageBytes) : undefined,
+          sourceMessageHash: status.messageBytes ? ethers.keccak256(status.messageBytes) : undefined,
+          sourceLogIndex: status.sourceLogIndex,
+          fromChainId:  fromChain.id,
+          toChainId:    toChain.id,
+          amount,
+          amountUnits,
+          recipient:    effectiveRecipient,
+          savedAt:      Date.now(),
+        });
+      }
+    };
+
     try {
-      await executeBridge(fromChain, toChain, amount, effectiveRecipient, (status) => {
-        setBridgeStatus(status);
-        if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
-        if (status.feeTxHash)  lastFeeTxRef.current   = status.feeTxHash;
-        if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
-        if (
-          status.step === "approving"  ||
-          status.step === "collecting" ||
-          status.step === "burning"    ||
-          status.step === "attesting"  ||
-          status.step === "minting"
-        ) {
-          currentStepRef.current = status.step;
-        }
-        // Save session once burn is confirmed so user can resume after a refresh
-        if (status.step === "attesting" && status.burnTxHash) {
-          saveSession({
-            burnTxHash:  status.burnTxHash,
-            feeTxHash:   status.feeTxHash,
-            messageBytes: status.messageBytes,
-            fromChainId: fromChain.id,
-            toChainId:   toChain.id,
-            amount,
-            recipient:   effectiveRecipient,
-            savedAt:     Date.now(),
-          });
-        }
-      }, { useGasRelay: useGasRelay && !!toChain.gasRelayerAddress });
+      await executeBridge(fromChain, toChain, amount, effectiveRecipient, trackStatus);
       clearSession();
+      if (lastBurnTxRef.current) {
+        saveBridgeHistory({
+          fromChainId: fromChain.id,
+          toChainId:   toChain.id,
+          amount,
+          burnTxHash:  lastBurnTxRef.current,
+          mintTxHash:  lastMintTxRef.current,
+          completedAt: Date.now(),
+        });
+        setHistory(loadBridgeHistory());
+      }
       await refreshBalances();
     } catch (err: unknown) {
+      console.error("[bridge error]", err);
       setBridgeStatus({
         step: "error",
         message: "Bridge failed",
@@ -213,36 +277,52 @@ export default function BridgePage() {
     }
   }
 
-  async function handleResume() {
-    if (!resumeSession || !walletAddress) return;
-    const from = getChainById(resumeSession.fromChainId);
-    const to   = getChainById(resumeSession.toChainId);
+  async function handleResume(sessionOverride?: BridgeSession) {
+    const activeSession = sessionOverride ?? resumeSession;
+    if (!activeSession || !walletAddress) return;
+    const from = getChainById(activeSession.fromChainId);
+    const to   = getChainById(activeSession.toChainId);
     if (!from || !to) { clearSession(); setResumeSession(null); return; }
 
     setFromChain(from);
     setToChain(to);
     setResumeSession(null);
     currentStepRef.current = null;
-    lastBurnTxRef.current  = resumeSession.burnTxHash;
-    lastFeeTxRef.current   = resumeSession.feeTxHash;
+    lastBurnTxRef.current  = activeSession.burnTxHash;
+    lastFeeTxRef.current   = activeSession.feeTxHash;
     lastMintTxRef.current  = undefined;
+
+    const trackResumeStatus = (status: BridgeStatus) => {
+      setBridgeStatus(status);
+      if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
+      if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
+      if (status.step === "attesting" || status.step === "minting") currentStepRef.current = status.step;
+    };
 
     try {
       await resumeBridge(
-        from, to,
-        resumeSession.burnTxHash,
-        resumeSession.messageBytes,
-        resumeSession.feeTxHash,
-        (status) => {
-          setBridgeStatus(status);
-          if (status.burnTxHash) lastBurnTxRef.current  = status.burnTxHash;
-          if (status.mintTxHash) lastMintTxRef.current  = status.mintTxHash;
-          if (
-            status.step === "attesting" || status.step === "minting"
-          ) currentStepRef.current = status.step;
-        }
-      );
+          from, to,
+          activeSession.burnTxHash,
+          activeSession.messageBytes,
+          activeSession.feeTxHash,
+          activeSession.recipient,
+          activeSession.amount,
+          activeSession.sourceMessageHash,
+          activeSession.sourceLogIndex,
+          trackResumeStatus,
+        );
       clearSession();
+      if (lastBurnTxRef.current) {
+        saveBridgeHistory({
+          fromChainId: from.id,
+          toChainId:   to.id,
+          amount:      activeSession.amount ?? "",
+          burnTxHash:  lastBurnTxRef.current,
+          mintTxHash:  lastMintTxRef.current,
+          completedAt: Date.now(),
+        });
+        setHistory(loadBridgeHistory());
+      }
       await refreshBalances();
     } catch (err: unknown) {
       setBridgeStatus({
@@ -278,18 +358,15 @@ export default function BridgePage() {
     bridgeStatus.step !== "error";
 
   const parsedAmount   = parseFloat(amount);
-  const amountIsValid  = amount !== "" && !isNaN(parsedAmount) && parsedAmount > 0;
+  const amountIsValid  = amount !== "" && !isNaN(parsedAmount) && parsedAmount > 0 && !/e/i.test(amount.trim());
   const sameChain      = fromChain.id === toChain.id;
-  const feeEnabled     = isFeeActive();
-
-  // Live fee breakdown — computed from raw input
-  const grossUnits = amountIsValid
-    ? (() => { try { return ethers.parseUnits(amount.trim(), 6); } catch { return null; } })()
-    : null;
-  const feeBreakdown = grossUnits !== null ? calculateFee(grossUnits) : null;
 
   const walletChain    = walletChainId ? getChainById(walletChainId) : null;
-  const fromBalanceNum = safeParseBalance(fromBalance);
+
+  // In gasless mode the USDC comes from the smart account's own wallet, not the EOA.
+  const gaslessActive    = false;
+  const effectiveBalance = fromBalance;
+  const fromBalanceNum   = safeParseBalance(effectiveBalance);
 
   // Insufficient balance — only flag when balance is known (not still loading)
   const insufficientBalance =
@@ -297,11 +374,30 @@ export default function BridgePage() {
     amountIsValid &&
     parsedAmount > fromBalanceNum;
 
+  // Relay-fee minimum guard — net received must be > 0 after all fees deducted
+  const belowRelayMin = false;
+
+  // Estimated bridge time — Arc source needs finalized attestation (~3–5 min), others ~1–3 min
+  const estimatedTime = fromChain.isArc ? "~3–5 min" : "~1–3 min";
+
   // Custom recipient validity — only flagged when the custom address field is active and non-empty
   const customRecipientInvalid =
     useCustomRecipient && recipient.trim() !== "" && !ethers.isAddress(recipient.trim());
   const customRecipientMissing =
     useCustomRecipient && recipient.trim() === "";
+
+  // Block gasless bridging when the Paymaster deposit is known to be 0 — the Paymaster
+  // will reject the UserOp at simulation time, wasting the user's time.
+  // null means still loading (don't block), 0n means confirmed empty (block).
+  const saNoPaymasterDeposit = false;
+  // Block gasless bridging when the Paymaster is paused — validatePaymasterUserOp will
+  // revert on-chain regardless of balance, so submitting is always wasted effort.
+  const saPaymasterIsPaused = false;
+  // Block gasless bridging when the Paymaster's ETH gas reserve in the EntryPoint is too
+  // low — Pimlico rejects the UserOp before even calling validatePaymasterUserOp.
+  // Threshold: 0.001 ETH (1e15 wei). null = still loading (don't block).
+  const MIN_ENTRY_POINT_DEPOSIT = 1_000_000_000_000_000n; // 0.001 ETH in wei
+  const saEntryPointDepositLow = false;
 
   const canBridge =
     !!walletAddress &&
@@ -310,11 +406,15 @@ export default function BridgePage() {
     !wrongNetwork &&
     !sameChain &&
     !insufficientBalance &&
+    !belowRelayMin &&
     !customRecipientInvalid &&
-    !customRecipientMissing;
+    !customRecipientMissing &&
+    !saNoPaymasterDeposit &&
+    !saPaymasterIsPaused &&
+    !saEntryPointDepositLow;
 
   function applyMaxBalance() {
-    if (fromBalance !== "—" && fromBalance !== "0.000000") setAmount(fromBalance);
+    if (effectiveBalance !== "—" && effectiveBalance !== "0.000000") setAmount(effectiveBalance);
   }
 
   return (
@@ -332,18 +432,6 @@ export default function BridgePage() {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <a href="/paymaster"
-            className="flex items-center gap-1.5 text-xs text-violet-400 hover:text-violet-300 font-medium transition-colors">
-            Paymaster ↗
-          </a>
-          <a href="/yield"
-            className="flex items-center gap-1.5 text-xs text-emerald-400 hover:text-emerald-300 font-medium transition-colors">
-            Yield ↗
-          </a>
-          <a href="https://faucet.circle.com" target="_blank" rel="noopener noreferrer"
-            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
-            Faucet <ExternalLink className="w-3 h-3" />
-          </a>
           {fromChain.explorerUrl ? (
             <a href={fromChain.explorerUrl} target="_blank" rel="noopener noreferrer"
               className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-[#4F9CF9] transition-colors">
@@ -366,17 +454,9 @@ export default function BridgePage() {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-white font-bold text-lg">Bridge USDC</h2>
-                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                    <p className="text-slate-400 text-xs">
-                      Burn on source · Attest · Mint natively on destination
-                    </p>
-                    {oraclePrice && (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-medium text-emerald-400/80 bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
-                        <span className="w-1 h-1 rounded-full bg-emerald-400 animate-pulse" />
-                        USDC {oraclePrice} · Band
-                      </span>
-                    )}
-                  </div>
+                  <p className="text-slate-400 text-xs mt-0.5">
+                    Burn on source · Attest · Mint natively on destination
+                  </p>
                 </div>
                 <button
                   onClick={refreshBalances}
@@ -412,7 +492,7 @@ export default function BridgePage() {
                     <div className="flex gap-1.5 flex-shrink-0">
                       {walletAddress ? (
                         <button
-                          onClick={handleResume}
+                          onClick={() => void handleResume()}
                           className="text-xs font-semibold text-[#4F9CF9] border border-[#4F9CF9]/40 px-3 py-1.5 rounded-lg hover:bg-[#4F9CF9]/10 transition-all whitespace-nowrap"
                         >
                           Resume
@@ -431,6 +511,35 @@ export default function BridgePage() {
                   </div>
                 );
               })()}
+
+              {/* Arc Testnet USDC rows notice — the native gas balance and the
+                  ERC-20 token row added via wallet_watchAsset are the SAME funds
+                  viewed two ways (18-dec native vs 6-dec ERC-20). Users read the
+                  two agreeing "USDC" rows as a double balance, so explain it. */}
+              {walletChainId === CHAINS.ARC_MAINNET.id && !arcNoticeDismissed && (
+                <div className="flex items-start justify-between gap-3 px-4 py-3 bg-sky-500/10 border border-sky-500/30 rounded-xl">
+                  <div className="flex items-start gap-2">
+                    <Info className="w-4 h-4 text-sky-400 mt-0.5 flex-shrink-0" />
+                    <div className="text-sky-300 text-xs space-y-1">
+                      <p className="font-semibold">Seeing two USDC rows in your wallet on Arc Testnet?</p>
+                      <p>
+                        That's expected — USDC is Arc's native gas token, so MetaMask shows it both as
+                        your <span className="font-semibold">gas balance</span> and as an{" "}
+                        <span className="font-semibold">ERC-20 token row</span>. They are the{" "}
+                        <span className="font-semibold">same funds</span>, not a double balance.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleDismissArcNotice}
+                    className="text-xs text-slate-500 hover:text-slate-300 px-2 py-1 transition-colors flex-shrink-0"
+                    title="Dismiss"
+                    aria-label="Dismiss notice"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
 
               {/* Wrong network banner */}
               {wrongNetwork && (
@@ -464,11 +573,13 @@ export default function BridgePage() {
                   onChange={(c) => setFromChain(c)} disabled={isProcessing} />
                 {walletAddress && (
                   <div className="flex items-center justify-between px-1">
-                    <span className="text-xs text-slate-500">Balance</span>
+                    <span className="text-xs text-slate-500">
+                      {gaslessActive ? "Smart account wallet" : "Balance"}
+                    </span>
                     <button onClick={applyMaxBalance}
                       disabled={!fromBalanceNum || isProcessing}
                       className="text-xs text-[#4F9CF9] hover:text-[#7BB8FB] font-mono transition-colors disabled:text-slate-500 disabled:cursor-default">
-                      {fromBalance} USDC
+                      {effectiveBalance} USDC
                     </button>
                   </div>
                 )}
@@ -500,7 +611,16 @@ export default function BridgePage() {
               {/* Insufficient balance warning */}
               {insufficientBalance && (
                 <p className="text-xs text-red-400 px-1">
-                  Insufficient balance — you have {fromBalance} USDC on {fromChain.shortName}.
+                  {gaslessActive
+                    ? `Insufficient USDC in your smart account — it holds ${effectiveBalance} USDC on ${fromChain.shortName}. Send USDC to the smart account address first.`
+                    : `Insufficient balance — you have ${effectiveBalance} USDC on ${fromChain.shortName}.`}
+                </p>
+              )}
+
+              {/* Relay fee minimum warning */}
+              {belowRelayMin && !insufficientBalance && (
+                <p className="text-xs text-amber-400 px-1">
+                  Amount too low — the 1 USDC relay fee would consume the entire transfer.
                 </p>
               )}
 
@@ -561,7 +681,7 @@ export default function BridgePage() {
               </div>
 
               {/* ── Gas Relay toggle ── */}
-              {toChain.gasRelayerAddress && (
+              {false && toChain.gasRelayerAddress && (
                 <div className="flex items-center justify-between px-4 py-3 bg-slate-800/30 rounded-xl border border-slate-700/40">
                   <div className="flex items-start gap-2">
                     <Zap className="w-3.5 h-3.5 text-[#4F9CF9] mt-0.5 flex-shrink-0" />
@@ -592,51 +712,219 @@ export default function BridgePage() {
                 </div>
               )}
 
-              {/* ── Fee & Bridge Summary ── */}
-              {amountIsValid && !sameChain && feeBreakdown && (
+              {/* ── ERC-4337 Gasless Bridge toggle ── */}
+              {false && isAASupported(fromChain.id) && (
+                <div className={cn(
+                  "flex items-center justify-between px-4 py-3 rounded-xl border transition-all",
+                  useGasless
+                    ? "bg-violet-950/30 border-violet-500/40"
+                    : "bg-slate-800/30 border-slate-700/40"
+                )}>
+                  <div className="flex items-start gap-2">
+                    <Zap className={cn("w-3.5 h-3.5 mt-0.5 flex-shrink-0", useGasless ? "text-violet-400" : "text-violet-400/60")} />
+                    <div>
+                      <p className="text-xs text-slate-300 font-medium">
+                        ERC-4337 gasless burn
+                        <span className="ml-1.5 inline-flex items-center text-[9px] font-bold bg-violet-500/20 text-violet-300 border border-violet-500/30 px-1.5 py-0.5 rounded-full">
+                          BETA
+                        </span>
+                      </p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        No ETH needed on source — gas paid in USDC via Paymaster
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setUseGasless(!useGasless)}
+                    disabled={isProcessing}
+                    className={cn(
+                      "relative w-9 h-5 rounded-full transition-colors duration-200 flex-shrink-0",
+                      useGasless ? "bg-violet-500" : "bg-slate-700",
+                      isProcessing && "opacity-50 cursor-not-allowed"
+                    )}
+                    aria-checked={useGasless}
+                    role="switch"
+                    aria-label="Enable ERC-4337 gasless bridging"
+                  >
+                    <span className={cn(
+                      "absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform duration-200",
+                      useGasless && "translate-x-4"
+                    )} />
+                  </button>
+                </div>
+              )}
+
+              {/* ── Gasless mode info banner ── */}
+              {false && useGasless && isAASupported(fromChain.id) && (
+                <div className={cn(
+                  "flex items-start gap-2 px-4 py-3 rounded-xl border",
+                  saPaymasterIsPaused
+                    ? "bg-red-950/20 border-red-500/30"
+                    : saNoPaymasterDeposit
+                      ? "bg-amber-950/20 border-amber-500/30"
+                      : "bg-violet-950/20 border-violet-500/20"
+                )}>
+                  <Info className={cn(
+                    "w-3.5 h-3.5 mt-0.5 flex-shrink-0",
+                    saPaymasterIsPaused ? "text-red-400" : saNoPaymasterDeposit ? "text-amber-400" : "text-violet-400"
+                  )} />
+                  <div className="text-[11px] leading-relaxed space-y-1.5 w-full">
+                    <p className={saPaymasterIsPaused ? "text-red-300/90" : saNoPaymasterDeposit ? "text-amber-300/90" : "text-violet-300/80"}>
+                      USDC is burned from your{" "}
+                      <span className="font-semibold">smart account wallet</span>{" "}
+                      ({saWalletBalance === "—" ? "loading…" : `${saWalletBalance} USDC available`}).
+                      Gas is paid from the Paymaster gas vault — no ETH or AVAX needed.
+                    </p>
+
+                    {/* Paymaster gas balance row */}
+                    <div className={cn(
+                      "flex items-center justify-between text-[10px] px-2.5 py-1.5 rounded-lg border",
+                      saPaymasterIsPaused
+                        ? "bg-red-950/40 border-red-500/20"
+                        : saNoPaymasterDeposit
+                          ? "bg-amber-950/40 border-amber-500/20"
+                          : "bg-violet-950/40 border-violet-500/20"
+                    )}>
+                      <span className={saPaymasterIsPaused ? "text-red-400/80" : saNoPaymasterDeposit ? "text-amber-400/80" : "text-violet-400/70"}>
+                        Paymaster gas balance
+                      </span>
+                      <span className={cn(
+                        "font-mono font-semibold",
+                        saPaymasterBalance === null
+                          ? "text-slate-500"
+                          : saPaymasterIsPaused
+                            ? "text-red-300"
+                            : saNoPaymasterDeposit
+                              ? "text-amber-400"
+                              : "text-violet-200"
+                      )}>
+                        {saPaymasterBalance === null
+                          ? "loading…"
+                          : `${(Number(saPaymasterBalance) / 1e6).toFixed(2)} USDC`}
+                        {saPaymasterIsPaused && " · PAUSED"}
+                      </span>
+                    </div>
+
+                    {/* EntryPoint ETH gas reserve row */}
+                    <div className={cn(
+                      "flex items-center justify-between text-[10px] px-2.5 py-1.5 rounded-lg border",
+                      saEntryPointDepositLow
+                        ? "bg-red-950/40 border-red-500/20"
+                        : "bg-violet-950/40 border-violet-500/10"
+                    )}>
+                      <span className={saEntryPointDepositLow ? "text-red-400/80" : "text-violet-400/50"}>
+                        Paymaster ETH reserve
+                      </span>
+                      <span className={cn(
+                        "font-mono font-semibold",
+                        saEntryPointDeposit === null
+                          ? "text-slate-500"
+                          : saEntryPointDepositLow
+                            ? "text-red-300"
+                            : "text-violet-300/70"
+                      )}>
+                        {saEntryPointDeposit === null
+                          ? "loading…"
+                          : saEntryPointDeposit === 0n
+                            ? "0 ETH · EMPTY"
+                            : `${(Number(saEntryPointDeposit) / 1e18).toFixed(5)} ETH`}
+                      </span>
+                    </div>
+
+                    {/* Warning when Paymaster is paused — shown above zero-balance warning */}
+                    {saPaymasterIsPaused && (
+                      <p className="text-red-300/80 text-[10px]">
+                        The Paymaster is currently paused — gasless bridging is temporarily unavailable on this chain.
+                        Use the standard bridge mode (requires ETH/AVAX for gas) or try again later.
+                      </p>
+                    )}
+
+                    {/* Warning when Paymaster ETH reserve in EntryPoint is too low */}
+                    {!saPaymasterIsPaused && saEntryPointDepositLow && (
+                      <p className="text-red-300/80 text-[10px]">
+                        The Paymaster's ETH gas reserve is too low — the bundler will reject UserOps.
+                        The Paymaster operator needs to call <span className="font-mono">EntryPoint.depositTo(paymaster)</span> with ETH.
+                        Use the standard bridge (requires ETH/AVAX for gas) or try again later.
+                      </p>
+                    )}
+
+                    {/* Warning when Paymaster deposit is zero */}
+                    {!saPaymasterIsPaused && !saEntryPointDepositLow && saNoPaymasterDeposit && (
+                      <p className="text-amber-300/80 text-[10px]">
+                        No gas funds deposited — the Paymaster will reject your UserOp.{" "}
+                        <a href="/paymaster" className="underline text-amber-300 hover:text-amber-200 font-medium">
+                          Go to Paymaster → Gasless Bridge Setup
+                        </a>{" "}
+                        to deposit USDC for gas first.
+                      </p>
+                    )}
+
+                    {/* Smart account address — send USDC here to fund the burn */}
+                    <div className={cn(
+                      "rounded-lg border px-2.5 py-2",
+                      saNoPaymasterDeposit
+                        ? "bg-amber-950/40 border-amber-500/20"
+                        : "bg-violet-950/40 border-violet-500/20"
+                    )}>
+                      <p className={cn("text-[10px] mb-1 uppercase tracking-wide", saNoPaymasterDeposit ? "text-amber-400/70" : "text-violet-400/70")}>Your smart account address</p>
+                      {saAddress ? (
+                        <div className="flex items-center gap-2">
+                          <span className={cn("font-mono text-[10px] break-all flex-1 select-all", saNoPaymasterDeposit ? "text-amber-200" : "text-violet-200")}>{saAddress}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(saAddress!).then(() => {
+                                setSaAddressCopied(true);
+                                setTimeout(() => setSaAddressCopied(false), 2000);
+                              }).catch(() => {});
+                            }}
+                            className={cn(
+                              "flex-shrink-0 text-[10px] px-2 py-0.5 rounded transition-colors",
+                              saNoPaymasterDeposit
+                                ? "bg-amber-700/40 hover:bg-amber-600/50 text-amber-300"
+                                : "bg-violet-700/40 hover:bg-violet-600/50 text-violet-300"
+                            )}
+                          >
+                            {saAddressCopied ? "Copied!" : "Copy"}
+                          </button>
+                        </div>
+                      ) : (
+                        <span className="text-violet-400/50 text-[10px]">Connect wallet to see address</span>
+                      )}
+                      <p className={cn("text-[10px] mt-1.5", saNoPaymasterDeposit ? "text-amber-400/60" : "text-violet-400/60")}>
+                        Send USDC here from MetaMask before bridging.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ── Bridge Summary ── */}
+              {amountIsValid && !sameChain && (
                 <div className="px-4 py-3 bg-slate-800/40 rounded-xl border border-slate-700/40 space-y-2">
                   <div className="flex justify-between text-xs">
                     <span className="text-slate-500">You send</span>
                     <span className="text-white font-medium">{amount} USDC</span>
                   </div>
 
-                  {feeBreakdown.active && (
-                    <div className="flex justify-between text-xs">
-                      <span className="flex items-center gap-1 text-slate-500">
-                        <Zap className="w-3 h-3 text-[#4F9CF9]" />
-                        Protocol fee ({FEE_BPS / 100}%)
-                      </span>
-                      <span className="text-slate-300 font-mono">
-                        −{formatUsdc(feeBreakdown.feeAmount)} USDC
-                      </span>
-                    </div>
-                  )}
-
-                  {useGasRelay && toChain.gasRelayerAddress && (
-                    <div className="flex justify-between text-xs">
-                      <span className="flex items-center gap-1 text-slate-500">
-                        <Zap className="w-3 h-3 text-purple-400" />
-                        Relay fee (gasless)
-                      </span>
-                      <span className="text-slate-300 font-mono">
-                        −{formatUsdc(GAS_RELAY_FEE_UNITS)} USDC
-                      </span>
-                    </div>
-                  )}
-
                   <div className="border-t border-slate-700/60 pt-2 flex justify-between text-xs">
                     <span className="text-slate-500">You receive</span>
                     <span className="text-emerald-400 font-semibold">
-                      {formatUsdc(
-                        feeBreakdown.bridgeAmount -
-                          (useGasRelay && toChain.gasRelayerAddress ? GAS_RELAY_FEE_UNITS : 0n)
-                      )} USDC
+                      {amount} USDC
                     </span>
                   </div>
 
                   <div className="flex justify-between text-xs">
                     <span className="text-slate-500">Protocol</span>
                     <span className="text-slate-300">Circle CCTP V2</span>
+                  </div>
+
+                  <div className="flex justify-between text-xs">
+                    <span className="flex items-center gap-1 text-slate-500">
+                      <Clock className="w-3 h-3" />
+                      Est. time
+                    </span>
+                    <span className="text-slate-400">{estimatedTime}</span>
                   </div>
                 </div>
               )}
@@ -647,11 +935,24 @@ export default function BridgePage() {
                   <StepProgress
                     step={bridgeStatus.step}
                     failedAtStep={bridgeStatus.failedAtStep}
-                    hasFee={feeEnabled}
-                    stepLabels={useGasRelay && toChain.gasRelayerAddress ? { minting: "Relay" } : undefined}
+                    hasFee={false}
+                    stepLabels={undefined}
                   />
 
-                  {/* Status message — special layout for attestation timeout */}
+                  {/* Attestation elapsed timer */}
+                  {bridgeStatus.step === "attesting" && attestElapsed > 0 && (
+                    <div className="flex items-center justify-center gap-1.5 text-xs text-slate-500">
+                      <Clock className="w-3 h-3 animate-pulse" />
+                      <span>
+                        Waiting for attestation —{" "}
+                        {attestElapsed >= 60
+                          ? `${Math.floor(attestElapsed / 60)}m ${attestElapsed % 60}s`
+                          : `${attestElapsed}s`}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Status message — special layouts for known failure modes */}
                   {bridgeStatus.step === "error" && bridgeStatus.error?.startsWith("Attestation timed out") ? (
                     <div className="space-y-2">
                       <p className="text-xs text-red-400 text-center font-medium">
@@ -667,6 +968,34 @@ export default function BridgePage() {
                           <TxLink hash={bridgeStatus.burnTxHash} chain={fromChain} />
                         </div>
                       )}
+                    </div>
+                  ) : bridgeStatus.step === "error" && bridgeStatus.failedAtStep === "minting" ? (
+                    /* Mint-step failure: the burn and attestation are already complete.
+                       Session is saved — the user just needs to switch to the destination
+                       chain and retry the mint without restarting the whole bridge. */
+                    <div className="space-y-3">
+                      <p className="text-xs text-amber-400 text-center font-medium">
+                        Network switch failed — your USDC burn is safe.
+                      </p>
+                      <p className="text-xs text-slate-400 text-center leading-relaxed">
+                        The burn and attestation are confirmed. Switch MetaMask to{" "}
+                        <span className="text-slate-300 font-medium">{toChain.name}</span> and
+                        complete the mint without restarting.
+                      </p>
+                      {walletAddress && (
+                        <button
+                          onClick={() => {
+                            const saved = loadSession();
+                            if (saved) void handleResume(saved);
+                          }}
+                          className="w-full py-2.5 text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 hover:border-amber-400/60 rounded-xl transition-all"
+                        >
+                          Switch to {toChain.name} and complete mint
+                        </button>
+                      )}
+                      <p className="text-xs text-red-400 text-center opacity-70">
+                        {bridgeStatus.error}
+                      </p>
                     </div>
                   ) : (
                     <p className={cn(
@@ -710,10 +1039,29 @@ export default function BridgePage() {
                     </button>
                   )}
 
-                  {(bridgeStatus.step === "done" || bridgeStatus.step === "error") && (
+                  {bridgeStatus.step === "error" && bridgeStatus.burnTxHash && !bridgeStatus.mintTxHash && (
+                    <button
+                      onClick={() => {
+                        const saved = loadSession();
+                        if (saved) void handleResume(saved);
+                      }}
+                      className="w-full py-2.5 text-xs font-semibold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 hover:border-amber-400/60 rounded-xl transition-all"
+                    >
+                      Resume submitted transfer
+                    </button>
+                  )}
+
+                  {bridgeStatus.step === "done" && (
                     <button onClick={handleReset}
                       className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 rounded-xl transition-all">
                       Start new transfer
+                    </button>
+                  )}
+
+                  {bridgeStatus.step === "error" && !bridgeStatus.burnTxHash && (
+                    <button onClick={handleReset}
+                      className="w-full py-2 text-xs font-semibold text-slate-400 hover:text-white border border-slate-700 hover:border-slate-500 rounded-xl transition-all">
+                      Try again
                     </button>
                   )}
                 </div>
@@ -740,9 +1088,12 @@ export default function BridgePage() {
                           ? "bg-[#4F9CF9] hover:bg-[#3B8AE8] text-white shadow-lg shadow-[#4F9CF9]/20"
                           : "bg-slate-700 text-slate-500 cursor-not-allowed"
                       )}>
-                      {sameChain      ? "Select different chains" :
-                       !amountIsValid ? "Enter an amount"         :
-                                        "Bridge USDC"}
+                      {sameChain                ? "Select different chains"        :
+                       !amountIsValid            ? "Enter an amount"                :
+                       saPaymasterIsPaused       ? "Paymaster paused"               :
+                       saEntryPointDepositLow    ? "Gas reserve too low"            :
+                       saNoPaymasterDeposit      ? "Deposit gas funds first"        :
+                                                  "Bridge USDC"}
                     </button>
                   )}
                 </>
@@ -750,31 +1101,11 @@ export default function BridgePage() {
             </div>
           </div>
 
-          {/* ── Fee notice / setup prompt ── */}
-          {feeEnabled ? (
-            <div className="px-4 py-3 bg-[#111827]/60 border border-[#4F9CF9]/10 rounded-xl">
-              <div className="flex items-start gap-2">
-                <Zap className="w-3.5 h-3.5 text-[#4F9CF9] mt-0.5 flex-shrink-0" />
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  A <span className="text-slate-400 font-medium">{FEE_BPS / 100}% protocol fee</span> is
-                  collected on each bridge transfer — deducted from the sent amount on the source chain
-                  before bridging.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="px-4 py-3 bg-[#111827]/60 border border-amber-500/10 rounded-xl">
-              <div className="flex items-start gap-2">
-                <Info className="w-3.5 h-3.5 text-amber-500/70 mt-0.5 flex-shrink-0" />
-                <p className="text-[11px] text-slate-500 leading-relaxed">
-                  Fee collection is inactive.{" "}
-                  Set the <span className="text-slate-400 font-mono">VITE_FEE_RECIPIENT</span> secret
-                  to your wallet address to start earning a{" "}
-                  <span className="text-slate-400">{FEE_BPS / 100}% protocol fee</span> on each transfer.
-                </p>
-              </div>
-            </div>
-          )}
+          <div className="px-4 py-3 bg-[#111827]/60 border border-emerald-500/10 rounded-xl">
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Standard CCTP V2 bridge · zero application fee. The amount received equals the amount sent.
+            </p>
+          </div>
 
           {/* ── Info footer ── */}
           <div className="px-4 py-3 bg-[#111827]/60 border border-white/[0.05] rounded-xl">
@@ -782,23 +1113,20 @@ export default function BridgePage() {
               <Info className="w-3.5 h-3.5 text-slate-500 mt-0.5 flex-shrink-0" />
               <p className="text-[11px] text-slate-500 leading-relaxed">
                 Uses Circle CCTP V2 — USDC is burned on source and natively minted on destination.
-                Arc Testnet CCTP Domain: <span className="text-slate-400 font-mono">26</span>.
-                Get testnet USDC from the{" "}
-                <a href="https://faucet.circle.com" target="_blank" rel="noopener noreferrer"
-                  className="text-[#4F9CF9] hover:underline">Circle Faucet</a>.
+                 Arc Mainnet CCTP Domain: <span className="text-slate-400 font-mono">26</span>.
               </p>
             </div>
           </div>
 
           {/* ── Chain pills ── */}
           <div className="grid grid-cols-2 gap-2">
-            <a href="https://docs.arc.network" target="_blank" rel="noopener noreferrer"
+            <a href="https://docs.arc.io" target="_blank" rel="noopener noreferrer"
               className="flex items-center gap-2 px-3 py-2 bg-[#111827]/60 border border-white/[0.05] rounded-xl hover:border-[#4F9CF9]/30 transition-all group">
               <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0"
-                style={{ background: CHAINS.ARC_TESTNET.logoColor }}>⬡</span>
+                style={{ background: CHAINS.ARC_MAINNET.logoColor }}>⬡</span>
               <div className="min-w-0">
                 <div className="text-xs text-white font-medium truncate">Arc Docs</div>
-                <div className="text-[10px] text-slate-500">docs.arc.network</div>
+                <div className="text-[10px] text-slate-500">docs.arc.io</div>
               </div>
               <ExternalLink className="w-3 h-3 text-slate-600 group-hover:text-[#4F9CF9] ml-auto transition-colors" />
             </a>
@@ -822,7 +1150,93 @@ export default function BridgePage() {
               </div>
               <ExternalLink className="w-3 h-3 text-slate-600 group-hover:text-[#4F9CF9] ml-auto transition-colors" />
             </a>
+            <a href="/ecosystem"
+              className="flex items-center gap-2 px-3 py-2 bg-[#111827]/60 border border-white/[0.05] rounded-xl hover:border-[#4F9CF9]/30 transition-all group">
+              <span className="w-5 h-5 rounded-full bg-[#354457] flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0">⬡</span>
+              <div className="min-w-0">
+                <div className="text-xs text-white font-medium truncate">About this app</div>
+                <div className="text-[10px] text-slate-500">Ecosystem · Sample App</div>
+              </div>
+            </a>
+            <a href="/developers"
+              className="flex items-center gap-2 px-3 py-2 bg-[#111827]/60 border border-white/[0.05] rounded-xl hover:border-[#4F9CF9]/30 transition-all group">
+              <span className="w-5 h-5 rounded-full bg-indigo-600/30 flex items-center justify-center text-[10px] font-bold text-indigo-300 flex-shrink-0">&lt;/&gt;</span>
+              <div className="min-w-0">
+                <div className="text-xs text-white font-medium truncate">Developers</div>
+                <div className="text-[10px] text-slate-500">App Kit · CCTP guide</div>
+              </div>
+            </a>
           </div>
+          {/* ── Bridge History ── */}
+          {history.length > 0 && (
+            <div className="bg-[#111827]/80 border border-white/[0.06] rounded-2xl overflow-hidden">
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                className="w-full flex items-center justify-between px-5 py-3.5 hover:bg-white/[0.02] transition-colors"
+              >
+                <div className="flex items-center gap-2">
+                  <Clock className="w-3.5 h-3.5 text-slate-500" />
+                  <span className="text-xs font-medium text-slate-400">
+                    Recent bridges ({history.length})
+                  </span>
+                </div>
+                {showHistory
+                  ? <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
+                  : <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                }
+              </button>
+
+              {showHistory && (
+                <div className="border-t border-white/[0.05] divide-y divide-white/[0.04]">
+                  {history.map((entry) => {
+                    const from = getChainById(entry.fromChainId);
+                    const to   = getChainById(entry.toChainId);
+                    const minsAgo = Math.round((Date.now() - entry.completedAt) / 60000);
+                    const timeLabel =
+                      minsAgo < 1   ? "just now" :
+                      minsAgo < 60  ? `${minsAgo}m ago` :
+                      minsAgo < 1440 ? `${Math.floor(minsAgo / 60)}h ago` :
+                      `${Math.floor(minsAgo / 1440)}d ago`;
+                    return (
+                      <div key={entry.id} className="px-5 py-3 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 text-xs text-white">
+                            <span className="font-mono font-semibold">{entry.amount} USDC</span>
+                            <span className="text-slate-600">·</span>
+                            <span className="text-slate-400">
+                              {from?.shortName ?? entry.fromChainId} → {to?.shortName ?? entry.toChainId}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-600 mt-0.5">{timeLabel}</p>
+                        </div>
+                        <div className="flex items-center gap-2 flex-shrink-0">
+                          {entry.mintTxHash && to && (
+                            <a
+                              href={`${to.explorerUrl}/tx/${entry.mintTxHash}`}
+                              target="_blank" rel="noopener noreferrer"
+                              className="text-[10px] text-emerald-500 hover:text-emerald-400 flex items-center gap-1 transition-colors"
+                            >
+                              Mint <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          )}
+                          {from && (
+                            <a
+                              href={`${from.explorerUrl}/tx/${entry.burnTxHash}`}
+                              target="_blank" rel="noopener noreferrer"
+                              className="text-[10px] text-slate-500 hover:text-slate-300 flex items-center gap-1 transition-colors"
+                            >
+                              Burn <ExternalLink className="w-2.5 h-2.5" />
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
         </div>
       </main>
     </div>

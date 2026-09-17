@@ -1,1 +1,13 @@
 - [YieldVault deployments](yield-vault-deployments.md) — deployed addresses for Arc/Base/Fuji; Sepolia needs more ETH to deploy
+- [Paymaster v2 deployment](paymaster-v2.md) — hardened contract addresses + key audit findings
+- [ERC-7562 nonReentrant on validatePaymasterUserOp](erc7562-paymaster-nonreentrant.md) — nonReentrant writes global _locked; ERC-7562 forbids this for unstaked paymasters; Pimlico rejects silently.
+- [Two-immutable constructor revert](two-immutable-revert.md) — 2-immutable (0x60c0 init) silently reverts on Arc/Base/Fuji; keep second var as `constant` to stay on 0x60a0.
+- [drizzle-kit BigInt default serialization](drizzle-bigint-default.md) — drizzle-kit@0.31.10 crashes with `Cannot serialize BigInt` when schema has `.default(0n)`; fix: use `mode:"number"` + `.default(0)` for counter/progress columns.
+- [Express BigInt JSON serialization](express-bigint-json.md) — drizzle `mode:"bigint"` returns native JS BigInt; Express JSON.stringify can't handle it; fix: `app.set("json replacer", (_k, v) => typeof v === "bigint" ? v.toString() : v)`.
+- [Workspace catalog — no typescript entry](workspace-catalog-typescript.md) — pnpm-workspace.yaml catalog has no `typescript` entry; new lib packages must use explicit version `"~5.9.3"`, not `"catalog:"`.
+- [Arc MetaMask nativeCurrency](arc-nativecurrency-config.md) — USDC/USDC/18 is correct; "must use ETH" was a myth; 10^12 skew = dapp formatting bug, not MetaMask.
+- [drpc.org free tier limits for Arc indexer](drpc-arc-limits.md) — three hard limits that must all be respected simultaneously; ignoring any one silently breaks the indexer.
+- [Local EVM test timing](local-evm-test-timing.md) — synchronous mining can expose cached gas estimates; rejection assertions must distinguish broadcast from execution.
+- [CCTP V2 message correlation](cctp-v2-message-correlation.md) — source and Iris messages differ in assigned fields; correlate immutables and replay by attested nonce.
+- [CCTP V2 burn simulation](cctp-v2-burn-simulation.md) — Arc mainnet can return empty success data; use raw eth_call rather than ABI-decoded staticCall.
+- [Wallet RPC post-broadcast errors](wallet-rpc-post-broadcast-errors.md) — a 403 after returning a tx hash may mean receipt polling failed; recover by hash and never invite a duplicate burn.

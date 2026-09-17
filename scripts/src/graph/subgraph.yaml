@@ -1,0 +1,147 @@
+# Arc Testnet — The Graph Subgraph Definition (Tool C)
+#
+# Deploy to a Graph Node:
+#   graph create --node http://localhost:8020/ arc/arc-testnet
+#   graph deploy --node http://localhost:8020/ --ipfs http://localhost:5001 arc/arc-testnet
+#
+# Or hosted service:
+#   graph auth --product hosted-service <ACCESS_TOKEN>
+#   graph deploy --product hosted-service <GITHUB_USER>/arc-testnet
+
+specVersion: 0.0.5
+description: Arc Testnet — USDC transfers, memos, and CCTP v2 bridge events
+repository: https://github.com/your-org/arc-subgraph
+
+schema:
+  file: ./schema.graphql
+
+dataSources:
+  # ── 1. Native USDC System Emitter (EIP-7708) ─────────────────────────────
+  # Emits Transfer for EVERY native USDC movement: native sends, ERC-20
+  # interface activity, mints, and burns. Single source of truth at 18d.
+  - kind: ethereum/contract
+    name: NativeUsdcEmitter
+    network: arc-testnet
+    source:
+      address: "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFE"
+      abi: ERC20Transfer
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - UsdcTransfer
+        - AddressStats
+        - IndexerMeta
+      abis:
+        - name: ERC20Transfer
+          file: ./abis/ERC20Transfer.json
+      eventHandlers:
+        - event: Transfer(indexed address,indexed address,uint256)
+          handler: handleNativeTransfer
+      file: ./src/usdc.ts
+
+  # ── 2. ERC-20 USDC Contract ──────────────────────────────────────────────
+  # Indexes 6-decimal Transfer events for ERC-20 interface activity only.
+  # NOTE: Each ERC-20 transfer also produces a log from the native emitter
+  # above. We index this source ONLY for Approval events and blocklist events
+  # — do NOT count its Transfer events to avoid double-counting.
+  - kind: ethereum/contract
+    name: UsdcErc20
+    network: arc-testnet
+    source:
+      address: "0x3600000000000000000000000000000000000000"
+      abi: NativeFiatToken
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - UsdcTransfer
+        - AddressStats
+      abis:
+        - name: NativeFiatToken
+          file: ./abis/NativeFiatToken.json
+      eventHandlers:
+        - event: Approval(indexed address,indexed address,uint256)
+          handler: handleApproval
+        - event: Blacklisted(indexed address)
+          handler: handleBlacklisted
+        - event: UnBlacklisted(indexed address)
+          handler: handleUnBlacklisted
+      file: ./src/usdc.ts
+
+  # ── 3. Memo Contract ─────────────────────────────────────────────────────
+  - kind: ethereum/contract
+    name: MemoContract
+    network: arc-testnet
+    source:
+      address: "0x5294E9927c3306DcBaDb03fe70b92e01cCede505"
+      abi: Memo
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - MemoEvent
+        - AddressStats
+        - IndexerMeta
+      abis:
+        - name: Memo
+          file: ./abis/Memo.json
+      eventHandlers:
+        - event: Memo(indexed address,indexed address,bytes32,indexed bytes32,bytes,uint256)
+          handler: handleMemo
+      file: ./src/memo.ts
+
+  # ── 4. CCTP v2 TokenMessenger — Burns ────────────────────────────────────
+  - kind: ethereum/contract
+    name: TokenMessenger
+    network: arc-testnet
+    source:
+      address: "0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA"
+      abi: TokenMessenger
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - CctpBurn
+        - AddressStats
+        - IndexerMeta
+      abis:
+        - name: TokenMessenger
+          file: ./abis/TokenMessenger.json
+      eventHandlers:
+        - event: DepositForBurn(indexed uint64,address,uint256,indexed address,bytes32,uint32,bytes32,bytes32)
+          handler: handleDepositForBurn
+      file: ./src/cctp.ts
+
+  # ── 5. CCTP v2 MessageTransmitter — Mints ────────────────────────────────
+  - kind: ethereum/contract
+    name: MessageTransmitter
+    network: arc-testnet
+    source:
+      address: "0xE737e5cEBEEBa77EFE34D4aa090756590b1CE275"
+      abi: MessageTransmitter
+      startBlock: 0
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - CctpMint
+        - CctpBurn
+        - AddressStats
+        - IndexerMeta
+      abis:
+        - name: MessageTransmitter
+          file: ./abis/MessageTransmitter.json
+      eventHandlers:
+        - event: MessageReceived(indexed address,uint32,indexed uint64,bytes32,bytes)
+          handler: handleMessageReceived
+      file: ./src/cctp.ts

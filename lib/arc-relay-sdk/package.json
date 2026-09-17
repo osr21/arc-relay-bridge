@@ -10,6 +10,7 @@
     "./fees": "./src/fees.ts",
     "./attest": "./src/attest.ts",
     "./relay": "./src/relay.ts",
-    "./types": "./src/types.ts"
+    "./types": "./src/types.ts",
+    "./mainnet": "./src/mainnet.ts"
   }
 }

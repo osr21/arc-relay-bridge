@@ -3,8 +3,26 @@ import { ethers } from "ethers";
 
 const router: IRouter = Router();
 
+// ── Relay replay protection ───────────────────────────────────────────────────
+// Key: keccak256(messageBytes) — matches the canonical CCTP message hash used
+// by Circle's Iris API.  Uniquely identifies a CCTP message.
+// usedMessages  — permanently fulfilled; blocks all future replays.
+// pendingMessages — currently in-flight; blocks concurrent duplicates.
+const usedMessages    = new Set<string>();
+const pendingMessages = new Set<string>();
+
+// ── Deployer address cache ────────────────────────────────────────────────────
+let _cachedRelayerAddress: string | null = null;
+function getRelayerAddress(privateKey: string): string {
+  if (!_cachedRelayerAddress) {
+    _cachedRelayerAddress = new ethers.Wallet(privateKey).address;
+  }
+  return _cachedRelayerAddress;
+}
+
 // ── Chain configs ─────────────────────────────────────────────────────────────
 // Must stay in sync with artifacts/arc-bridge/src/lib/chains.ts
+// GasRelayer addresses: v2-hardened (deployed 2026-06-16)
 
 const CHAIN_CONFIGS: Record<number, {
   name: string;
@@ -17,26 +35,26 @@ const CHAIN_CONFIGS: Record<number, {
     name: "Arc Testnet",
     rpcUrl: "https://rpc.drpc.testnet.arc.network",
     rpcFallbacks: ["https://rpc.testnet.arc.network"],
-    gasRelayerAddress: "0x837D9a19C07bb7B4E95071dC0BaED72D4dE04ea1",
+    gasRelayerAddress: "0xf89773D7d9C43c01203793bf991e2550975a0C49",
     gasLimitOverride: 600_000n,
   },
   11155111: {
     name: "Ethereum Sepolia",
     rpcUrl: "https://ethereum-sepolia-rpc.publicnode.com",
     rpcFallbacks: ["https://sepolia.drpc.org", "https://1rpc.io/sepolia"],
-    gasRelayerAddress: "0x5E87F210043D8457caCAd0F0c9aB70a99497Eec9",
+    gasRelayerAddress: "0x5eA2A91629245074D01EFf64fc223233c2a805E6",
   },
   84532: {
     name: "Base Sepolia",
     rpcUrl: "https://sepolia.base.org",
     rpcFallbacks: ["https://base-sepolia.drpc.org", "https://base-sepolia-rpc.publicnode.com"],
-    gasRelayerAddress: "0x64D160b7E91e78e52dFc0e8829640E32A919164C",
+    gasRelayerAddress: "0x5bE70628f49aFb90D81d169bff1533F437B967BB",
   },
   43113: {
     name: "Avalanche Fuji",
     rpcUrl: "https://api.avax-test.network/ext/bc/C/rpc",
     rpcFallbacks: ["https://avalanche-fuji.drpc.org"],
-    gasRelayerAddress: "0x6F80056564491425273A6a481EcC5DAea9D57f23",
+    gasRelayerAddress: "0x53183000a7Ae24AE9F1126271a66Eff1161a58Ec",
   },
 };
 
@@ -55,7 +73,12 @@ async function getProvider(chain: typeof CHAIN_CONFIGS[number]): Promise<ethers.
   for (const url of urls) {
     try {
       const p = new ethers.JsonRpcProvider(url);
-      await p.getBlockNumber();
+      await Promise.race([
+        p.getBlockNumber(),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error(`RPC timeout: ${url}`)), 6_000)
+        ),
+      ]);
       return p;
     } catch (err) {
       lastErr = err;
@@ -126,12 +149,26 @@ router.post("/relay", async (req, res) => {
   const { message, attestation, recipient, destChainId, maxFee } = req.body ?? {};
 
   // ── Input validation ──────────────────────────────────────────────────────
-  if (!message || typeof message !== "string" || !/^0x[0-9a-fA-F]+$/.test(message)) {
-    res.status(400).json({ error: "Invalid message — must be 0x-prefixed hex" });
+  // CCTP messages are ~300 bytes (≤ 610 hex chars + 0x prefix); minimum ~140 bytes = 282 chars.
+  // Allow 4× headroom (2500 chars) to accommodate any future CCTP V2 extensions.
+  // Enforce even hex length — each byte is exactly 2 hex chars.
+  if (
+    !message || typeof message !== "string" ||
+    !/^0x([0-9a-fA-F]{2})+$/.test(message) ||
+    message.length < 284 || message.length > 2500
+  ) {
+    res.status(400).json({ error: "Invalid message — must be 0x-prefixed even-length hex, 284–2500 chars" });
     return;
   }
-  if (!attestation || typeof attestation !== "string" || !/^0x[0-9a-fA-F]+$/.test(attestation)) {
-    res.status(400).json({ error: "Invalid attestation — must be 0x-prefixed hex" });
+  // Circle Iris attestations are 65 bytes (secp256k1) = 130 hex chars + "0x" prefix = 132 chars per signer.
+  // CCTP V2 supports threshold (multi-sig) attestations: N × 65 bytes concatenated.
+  // Cap at 16 signers: 2 + 16 × 130 = 2082 chars.  Enforce even hex length.
+  if (
+    !attestation || typeof attestation !== "string" ||
+    !/^0x([0-9a-fA-F]{2})+$/.test(attestation) ||
+    attestation.length < 132 || attestation.length > 2082
+  ) {
+    res.status(400).json({ error: "Invalid attestation — must be 0x-prefixed even-length hex, 132–2082 chars" });
     return;
   }
   if (!recipient || !ethers.isAddress(recipient)) {
@@ -165,27 +202,52 @@ router.post("/relay", async (req, res) => {
     return;
   }
 
+  // ── Replay protection ─────────────────────────────────────────────────────
+  // Key on keccak256(messageBytes) — matches the canonical CCTP message hash.
+  // message is a 0x-prefixed hex string; keccak256 decodes it to bytes first.
+  const messageKey = ethers.keccak256(message);
+  if (usedMessages.has(messageKey) || pendingMessages.has(messageKey)) {
+    res.status(409).json({ error: "This CCTP message has already been relayed" });
+    return;
+  }
+  pendingMessages.add(messageKey);
+
   // ── Submit relay tx ───────────────────────────────────────────────────────
   let provider: ethers.JsonRpcProvider;
   try {
     provider = await getProvider(chain);
   } catch {
+    pendingMessages.delete(messageKey);
     res.status(503).json({ error: `Cannot connect to ${chain.name} RPC` });
     return;
   }
 
+  void getRelayerAddress(privateKey); // warm cache before wallet construction
   const wallet   = new ethers.Wallet(privateKey, provider);
   const contract = new ethers.Contract(chain.gasRelayerAddress, GAS_RELAYER_ABI, wallet);
 
+  // ── Check paused before reading fee ──────────────────────────────────────
+  let isPaused: boolean;
   let relayFeeOnChain: bigint;
   try {
-    relayFeeOnChain = await contract.relayFee() as bigint;
+    [isPaused, relayFeeOnChain] = await Promise.all([
+      contract.paused() as Promise<boolean>,
+      contract.relayFee() as Promise<bigint>,
+    ]);
   } catch {
-    res.status(503).json({ error: "Failed to read relay fee from contract" });
+    pendingMessages.delete(messageKey);
+    res.status(503).json({ error: "Failed to read relay contract state" });
+    return;
+  }
+
+  if (isPaused) {
+    pendingMessages.delete(messageKey);
+    res.status(503).json({ error: "Relay service is temporarily paused — please try again later" });
     return;
   }
 
   if (relayFeeOnChain > maxFeeBig) {
+    pendingMessages.delete(messageKey);
     res.status(400).json({
       error: `Current relay fee (${relayFeeOnChain.toString()} units) exceeds your maxFee (${maxFee} units)`,
     });
@@ -199,13 +261,18 @@ router.post("/relay", async (req, res) => {
   try {
     const tx = await contract.relay(message, attestation, recipient, maxFeeBig, overrides);
     txHash = tx.hash;
+    // Mark as permanently fulfilled before returning — prevents replays
+    usedMessages.add(messageKey);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     const reason = (err as { reason?: string })?.reason;
+    pendingMessages.delete(messageKey);
     res.status(500).json({
       error: `Relay transaction failed: ${reason ?? msg.slice(0, 200)}`,
     });
     return;
+  } finally {
+    pendingMessages.delete(messageKey);
   }
 
   res.json({

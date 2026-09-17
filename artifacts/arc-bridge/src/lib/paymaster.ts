@@ -8,9 +8,11 @@
 import { ethers } from "ethers";
 import { ChainConfig, CHAINS } from "./chains";
 import { getProvider, switchToChain, friendlyError } from "./bridge";
+import { assertBackendEnvironment, assertFeatureAvailable } from "./network";
 
 export const PAYMASTER_ABI = [
   "function balances(address user) view returns (uint256)",
+  "function locked(address user) view returns (uint256)",
   "function gasRate() view returns (uint256)",
   "function paused() view returns (bool)",
   "function MAX_DEDUCTION_PER_TX() view returns (uint256)",
@@ -32,10 +34,10 @@ export const USDC_ABI = [
  * Keyed by chain ID. Empty string = not yet deployed on that chain.
  */
 export const PAYMASTER_ADDRESSES: Record<number, string> = {
-  5042002:  "0x05FCDBf7E7b7c50929D7ccdd32000be30a796E60", // Arc Testnet
-  11155111: "0xE0b2557C27cc358C27376A96493Fa97c3EC58b31", // Ethereum Sepolia
-  84532:    "0x57a298356E6B2A98d44C68Ff92B7372D639684E0", // Base Sepolia
-  43113:    "0x06e2AF4CD0B05B5c415fBe7Ce256be41a6D8D7F4", // Avalanche Fuji
+  5042002:  "0xEE39e1690F1bE07e8a68813f57cE3142197CECf6", // Arc Testnet      (v6-hardened)
+  11155111: "0xe7ED22eF9Af9CAd98B048979dbd726e89dd0D417", // Ethereum Sepolia  (v6-hardened)
+  84532:    "0x5f309aE9A9A364Ae18af77b7733bB9C43A032A4A", // Base Sepolia      (v6-hardened)
+  43113:    "0x0D3B7bd972F4Cc3CDAB62E1cFafcA79F8d7167f5", // Avalanche Fuji    (v6-hardened)
 };
 
 export function isPaymasterDeployed(chainId: number): boolean {
@@ -102,6 +104,54 @@ export async function fetchAllBalances(userAddress: string): Promise<PaymasterBa
   );
 }
 
+/** ERC-4337 v0.7 EntryPoint — same address on all EVM chains. */
+const ENTRY_POINT_ADDRESS = "0x0000000071727De22E5E9d8BAf0edAc6f37da032";
+const ENTRY_POINT_ABI = [
+  "function balanceOf(address account) view returns (uint256)",
+];
+
+export interface SmartAccountPaymasterBalance {
+  balance: bigint;
+  locked: bigint;
+  available: bigint;
+  paused: boolean;
+  gasRate: bigint;
+  /** Paymaster's native-token deposit in the EntryPoint (wei). Must be > 0 for UserOps to be accepted by the bundler. */
+  entryPointDeposit: bigint;
+}
+
+/**
+ * Fetch a smart account's Paymaster balance on one chain.
+ * Returns { balance, locked, available, paused, gasRate, entryPointDeposit }.
+ * `available = balance - locked` mirrors exactly what validatePaymasterUserOp checks.
+ * `paused = true` means validatePaymasterUserOp will revert regardless of balance.
+ * `entryPointDeposit` is the Paymaster's native-token reserve in the EntryPoint —
+ *  if this is too low, the bundler will reject the UserOp before even calling the Paymaster.
+ */
+export async function fetchSmartAccountPaymasterBalance(
+  chain: ChainConfig,
+  smartAccountAddr: string
+): Promise<SmartAccountPaymasterBalance> {
+  const addr = PAYMASTER_ADDRESSES[chain.id];
+  if (!isPaymasterDeployed(chain.id)) {
+    return { balance: 0n, locked: 0n, available: 0n, paused: false, gasRate: 0n, entryPointDeposit: 0n };
+  }
+  const rpcUrl  = chain.rpcUrl ?? getChainRpc(chain.id);
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  const contract = new ethers.Contract(addr, PAYMASTER_ABI, provider);
+  const entryPointContract = new ethers.Contract(ENTRY_POINT_ADDRESS, ENTRY_POINT_ABI, provider);
+
+  const [balance, locked, paused, gasRate, entryPointDeposit] = await Promise.all([
+    contract.balances(smartAccountAddr) as Promise<bigint>,
+    contract.locked(smartAccountAddr)   as Promise<bigint>,
+    contract.paused()                   as Promise<boolean>,
+    contract.gasRate()                  as Promise<bigint>,
+    entryPointContract.balanceOf(addr)  as Promise<bigint>,
+  ]);
+  const available = balance > locked ? balance - locked : 0n;
+  return { balance, locked, available, paused, gasRate, entryPointDeposit };
+}
+
 /** Fetch the user's wallet USDC balance on a specific chain. */
 export async function fetchWalletBalance(chain: ChainConfig, userAddress: string): Promise<bigint> {
   const rpcUrl  = getChainRpc(chain.id);
@@ -116,6 +166,8 @@ export async function depositToPaymaster(
   amount: bigint,
   setStatus: (s: PaymasterStatus) => void
 ): Promise<string> {
+  assertFeatureAvailable("gasless");
+  await assertBackendEnvironment();
   const paymasterAddr = PAYMASTER_ADDRESSES[chain.id];
   if (!paymasterAddr) throw new Error("Paymaster not deployed on this chain");
 
@@ -148,6 +200,8 @@ export async function withdrawFromPaymaster(
   amount: bigint,
   setStatus: (s: PaymasterStatus) => void
 ): Promise<string> {
+  assertFeatureAvailable("gasless");
+  await assertBackendEnvironment();
   const paymasterAddr = PAYMASTER_ADDRESSES[chain.id];
   if (!paymasterAddr) throw new Error("Paymaster not deployed on this chain");
 

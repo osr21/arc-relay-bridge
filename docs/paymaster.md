@@ -1,92 +1,112 @@
 # Paymaster
 
-  The Paymaster contract enables gasless bridging — users pay transaction fees in USDC instead of native tokens (ETH, AVAX).
+> **Historical testnet documentation:** The paymaster and ERC-4337 gasless mode
+> are disabled in the Arc↔Base mainnet application. Addresses in this document
+> are not mainnet deployments and must not be used by the live bridge.
 
-  ## Contract addresses (v5)
+The Paymaster contract enables gasless transactions on Arc Relay Bridge by letting users pay transaction fees in USDC instead of native gas tokens. It is compatible with [ERC-4337 v0.7](https://eips.ethereum.org/EIPS/eip-4337) and integrates with the canonical EntryPoint.
 
-  | Chain | Address |
-  |---|---|
-  | Arc Testnet | `0xfD06D288d481515a986DF28030AF013De290D76C` |
-  | Ethereum Sepolia | `0xC9E9ba0bfE58FA438B8B6f2182d3ADA3669F9Eb4` |
-  | Base Sepolia | `0xe355E9dCdEAB37eA8fd81b9457Ad2C56d3eE9055` |
-  | Avalanche Fuji | `0x7C75A75B59b63871e1Bb47fA63e541F0e5975f93` |
+## Contract addresses (v3 — 2026-06-01)
 
-  Re-deploy: `pnpm --filter @workspace/scripts run deploy-paymaster`
+| Chain | Address |
+|---|---|
+| Arc Testnet | [`0x3fAC0e0F8d8BfE9498d06332582C48Dc32698D65`](https://testnet.arcscan.app/address/0x3fAC0e0F8d8BfE9498d06332582C48Dc32698D65) |
+| Ethereum Sepolia | [`0xfF57188ea392bA5e91bdf675AAA55f2D8Ba9BdBe`](https://sepolia.etherscan.io/address/0xfF57188ea392bA5e91bdf675AAA55f2D8Ba9BdBe) |
+| Base Sepolia | [`0x3649C856025FDC0F92EDAc2B52DD53452248bA33`](https://sepolia.basescan.org/address/0x3649C856025FDC0F92EDAc2B52DD53452248bA33) |
+| Avalanche Fuji | [`0xd9E34Aca62a16a58a4e7144130Be94bD908D368c`](https://testnet.snowtrace.io/address/0xd9E34Aca62a16a58a4e7144130Be94bD908D368c) |
 
-  ## Two distinct USDC pools
+**ERC-4337 v0.7 EntryPoint (all chains):** `0x0000000071727De22E5E9d8BAf0edAc6f37da032`
 
-  | Pool | Purpose | Notes |
-  |---|---|---|
-  | **Smart account wallet** | USDC burned for the bridge | Whatever you want to bridge |
-  | **Paymaster gas vault** | Bundler gas fees per bridge | Keep ≥ 1.8 USDC |
+## How it works
 
-  The gas vault does **not** contribute to the bridge amount. A vault with 17 USDC does not let you bridge 17 USDC — the smart account wallet also needs USDC.
+Users deposit USDC into the Paymaster in advance. When a sponsored transaction is executed:
 
-  ## ERC-4337 flow
+1. The ERC-4337 EntryPoint calls `validatePaymasterUserOp`, which reserves the maximum possible USDC cost in a `locked` mapping.
+2. The user's UserOperation is executed (e.g. `depositForBurn` on the CCTP TokenMessenger).
+3. The EntryPoint calls `postOp`, which releases the reservation and charges the actual gas cost in USDC (gas units × rate, capped at 10 USDC).
 
-  ```
-  User signs UserOperation
-          │
-  EntryPoint v0.7 → validatePaymasterUserOp()
-      • Checks available = balances[user] - locked[user] ≥ maxUsdcCost
-      • Locks  locked[user] += maxUsdcCost
-      • Returns context = abi.encode(user, maxUsdcCost)
-          │
-  EntryPoint executes inner calls
-      • USDC.approve(tokenMessenger, burnAmount)
-      • TokenMessenger.depositForBurn(...)
-          │
-  EntryPoint → postOp()
-      • Unlocks locked[user] -= reserved
-      • Calculates actualUsdcCost = (actualGasCost / feePerGas) × gasRate
-      • Deducts  balances[user] -= actualUsdcCost
-      • Transfers actualUsdcCost → feeRecipient
-      • Emits GasSponsored(user, usdcDeducted, remainingBalance)
-  ```
+The legacy `deductGas` path (called directly by a trusted relayer) remains available alongside ERC-4337 for backward compatibility.
 
-  ## One-time setup per chain
+## Gasless bridge setup
 
-  1. **Fund the smart account wallet** — send USDC from MetaMask to the SimpleAccount address shown on the Paymaster page. Regular ERC-20 transfer, tiny native gas, done once.
-  2. **Deposit USDC to gas vault** — Paymaster page → enter amount → Deposit. Pimlico-sponsored UserOp; no native gas needed.
-  3. **Bridge** — enable ERC-4337 toggle and bridge normally.
+The bridge UI provides a dedicated setup flow on the **Paymaster** page:
 
-  ## EntryPoint deposit
+1. **Connect wallet** — your ERC-4337 SimpleAccount address is derived deterministically from your MetaMask EOA (counterfactual, no deployment needed upfront).
+2. **Fund the SimpleAccount** — send USDC to that address from any source (Circle faucet, another wallet, etc.).
+3. **Sponsored deposit** — click **Deposit (Sponsored)** on the Paymaster page. Pimlico pays the gas for the approve + deposit UserOperation; the USDC moves from your SimpleAccount into the Paymaster balance. No ETH needed.
+4. **Bridge** — enable the **ERC-4337 gasless burn** toggle on the bridge. The burn UserOperation is submitted through Pimlico, with gas deducted from your Paymaster USDC balance.
 
-  The Paymaster must have ETH at the EntryPoint. Run after any new deployment:
+> Arc Testnet uses USDC as its native gas token. ERC-4337 is not available as a source chain.
 
-  ```bash
-  pnpm --filter @workspace/scripts run fund-paymaster
-  pnpm --filter @workspace/scripts run fund-paymaster -- --only sepolia --amount 0.05
-  pnpm --filter @workspace/scripts run fund-paymaster -- --only base   --amount 0.02
-  pnpm --filter @workspace/scripts run fund-paymaster -- --only fuji   --amount 0.05
-  ```
+## Implementation details
 
-  Funded 2026-06-03:
+| File | Role |
+|---|---|
+| `src/lib/aa.ts` | `isAASupported`, `getSmartAccountAddress`, `createBridgeClient` (Paymaster pays), `createSponsoredClient` (Pimlico pays) |
+| `src/lib/gaslessBridge.ts` | `executeBridgeGasless`, `depositToPaymasterGasless` |
+| `artifacts/api-server/src/routes/bundler.ts` | `/api/bundler/:network` — Pimlico JSON-RPC proxy (300 req/min) |
 
-  | Chain | ETH at EntryPoint |
-  |---|---|
-  | Ethereum Sepolia | ~0.048 ETH |
-  | Base Sepolia | ~0.020 ETH |
-  | Avalanche Fuji | ~0.050 ETH |
+Supported networks for ERC-4337: `sepolia` (11155111), `base-sepolia` (84532), `avalanche-fuji` (43113).
 
-  ## Deployment constraints
+## Contract interface (v0.7)
 
-  | Constraint | Reason |
-  |---|---|
-  | `evmVersion: "paris"` | Arc Testnet + Fuji reject PUSH0 (Shanghai opcode) |
-  | `entryPoint` as `constant`, not `immutable` | 2-immutable 0x60c0 init silently reverts on Arc/Base/Fuji |
-  | No `nonReentrant` on `validatePaymasterUserOp` | ERC-7562 forbids global storage writes for unstaked paymasters — Pimlico rejects at simulation |
-  | Deposit ETH at EntryPoint before use | Bundler returns AA31 if deposit is 0 |
-  | Update both address files after redeploy | `lib/paymaster.ts` + `api-server/routes/paymaster.ts` |
+```solidity
+// ERC-4337 v0.7
+function validatePaymasterUserOp(
+    PackedUserOperation calldata userOp,
+    bytes32 userOpHash,
+    uint256 maxCost
+) external returns (bytes memory context, uint256 validationData);
 
-  ## Security
+function postOp(
+    PostOpMode mode,
+    bytes calldata context,
+    uint256 actualGasCost,
+    uint256 actualUserOpFeePerGas
+) external;
 
-  - `onlyEntryPoint` on `validatePaymasterUserOp` and `postOp`
-  - `onlyRelayer` on `deductGas`
-  - `MAX_DEDUCTION_PER_TX = 10 USDC` hard cap per call
-  - `locked[user]` prevents double-spending across concurrent UserOps
-  - `withdraw()` only releases unlocked funds
-  - Reentrancy guard on `deposit`, `withdraw`, `deductGas`, `postOp`
-  - Emergency pause + two-step ownership
-  - `rescueTokens` blocks USDC rescue
-  
+// Legacy relayer path (unchanged from v2)
+function deductGas(address user, uint256 gasUsed) external;
+
+// User-facing
+function deposit(uint256 amount) external;
+function withdraw(uint256 amount) external;
+function balanceOf(address user) external view returns (uint256);
+function locked(address user) external view returns (uint256);
+```
+
+## Gas rate
+
+The Paymaster charges users at a configurable `gasRate` (USDC per gas unit, 6-decimal). Each charge is capped at **10 USDC** per transaction. The rate is set by the owner and is hard-capped at `MAX_GAS_RATE` = 1 USDC/gas unit to protect users.
+
+## Compilation constraints
+
+- **`evmVersion: "paris"`** — Arc Testnet and Avalanche Fuji reject the `PUSH0` opcode introduced in the Shanghai hardfork.
+- **`entryPoint` must be a `constant`, not `immutable`** — contracts with two or more `immutable` variables use a `0x60c0` constructor prefix that silently reverts on Arc Testnet, Base Sepolia, and Avalanche Fuji. Keeping only `usdc` as `immutable` (single `0x60a0` prefix) is required for cross-chain compatibility.
+
+## Re-deploying
+
+```bash
+# Deploy to all chains
+pnpm --filter @workspace/scripts run deploy-paymaster
+
+# Deploy to a subset
+pnpm --filter @workspace/scripts run deploy-paymaster -- --only sepolia
+pnpm --filter @workspace/scripts run deploy-paymaster -- --only arc,fuji
+```
+
+Constructor: `(address usdc, address relayer, address feeRecipient, uint256 gasRate)` — 4 params; `entryPoint` is a hardcoded constant.
+
+After deploying, update `PAYMASTER_ADDRESSES` in `artifacts/arc-bridge/src/lib/paymaster.ts`.
+
+## Admin operations
+
+| Function | Access | Description |
+|---|---|---|
+| `setRelayer(address)` | Owner | Update the trusted relayer address |
+| `setFeeRecipient(address)` | Owner | Update where gas fees are sent |
+| `setGasRate(uint256)` | Owner | Update USDC-per-gas rate (capped at MAX_GAS_RATE) |
+| `pause()` / `unpause()` | Owner | Freeze / resume all user operations |
+| `rescueTokens(address,uint256)` | Owner | Recover accidentally sent tokens (USDC rescue is blocked) |
+| `transferOwnership(address)` | Owner | Begin two-step ownership transfer |
+| `acceptOwnership()` | Pending owner | Complete ownership transfer |
